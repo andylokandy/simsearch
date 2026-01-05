@@ -222,11 +222,20 @@ where
                     let len = max(token.len(), pattern_token.len()) as f64;
                     // calculate k (based on the threshold) to bound the Levenshtein distance
                     let k = ((1.0 - self.option.threshold) * len).ceil() as u32;
-                    // levenshtein_simd_k only works on ASCII byte slices, so the token strings
-                    // are directly treated as byte slices
-                    match levenshtein_simd_k(token.as_bytes(), pattern_token.as_bytes(), k) {
-                        Some(dist) => 1.0 - if len == 0.0 { 0.0 } else { (dist as f64) / len },
-                        None => f64::MIN,
+
+                    // cheap prefilter: if length difference already exceeds k,
+                    // levenshtein_simd_k would return None, so skip calling it.
+                    let tlen = token.len() as i32;
+                    let plen = pattern_token.len() as i32;
+                    if ((tlen - plen).abs() as u32) > k {
+                        f64::MIN
+                    } else {
+                        // levenshtein_simd_k only works on ASCII byte slices, so the token strings
+                        // are directly treated as byte slices
+                        match levenshtein_simd_k(token.as_bytes(), pattern_token.as_bytes(), k) {
+                            Some(dist) => 1.0 - if len == 0.0 { 0.0 } else { (dist as f64) / len },
+                            None => f64::MIN,
+                        }
                     }
                 } else {
                     jaro_winkler(token, &pattern_token)
@@ -276,10 +285,13 @@ where
     pub fn remove(&mut self, id: &Id) {
         if let Some(id_num) = self.ids_map.get(id) {
             for token in &self.forward_map[id_num] {
-                self.reverse_map
-                    .get_mut(token)
-                    .unwrap()
-                    .retain(|i| i != id_num);
+                if let Some(vec) = self.reverse_map.get_mut(token) {
+                    vec.retain(|i| i != id_num);
+                    if vec.is_empty() {
+                        // prune empty token entry to keep the index small
+                        self.reverse_map.remove(token);
+                    }
+                }
             }
             self.forward_map.remove(id_num);
             self.reverse_ids_map.remove(id_num);
@@ -327,6 +339,8 @@ where
         }
 
         tokens.retain(|token| !token.is_empty());
+
+        
 
         tokens
     }
