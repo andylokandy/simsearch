@@ -59,12 +59,11 @@ impl Autocomplete for BookSearcher {
 }
 
 fn get_render_config() -> RenderConfig<'static> {
-    let mut render_config = RenderConfig::default();
-
-    render_config.prompt_prefix = Styled::new(">").with_fg(Color::LightRed);
-    render_config.highlighted_option_prefix = Styled::new("*").with_fg(Color::LightYellow);
-    render_config.option = StyleSheet::new().with_fg(Color::DarkBlue);
-    render_config.help_message = StyleSheet::new().with_fg(Color::LightYellow);
-
-    render_config
+    RenderConfig {
+        prompt_prefix: Styled::new(">").with_fg(Color::LightRed),
+        highlighted_option_prefix: Styled::new("*").with_fg(Color::LightYellow),
+        option: StyleSheet::new().with_fg(Color::DarkBlue),
+        help_message: StyleSheet::new().with_fg(Color::LightYellow),
+        ..Default::default()
+    }
 }

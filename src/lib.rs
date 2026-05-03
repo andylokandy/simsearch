@@ -183,7 +183,36 @@ where
     ///
     /// assert_eq!(results, &[1]);
     pub fn search(&self, pattern: &str) -> Vec<Id> {
-        self.search_tokens(&[pattern])
+        self.search_with_scores(pattern)
+            .into_iter()
+            .map(|(id, _score)| id)
+            .collect()
+    }
+
+    /// Searches pattern and returns ids with scores sorted by relevance.
+    ///
+    /// Pattern will be tokenized according to the search option.
+    /// By default whitespaces(including tabs) are considered as stop words,
+    /// you can change the behavior by providing `SearchOptions`.
+    ///
+    /// Additionally, note that pattern must be an ASCII string if Levenshtein
+    /// distance is used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use simsearch::SimSearch;
+    ///
+    /// let mut engine: SimSearch<u32> = SimSearch::new();
+    ///
+    /// engine.insert(1, "Things Fall Apart");
+    ///
+    /// let results: Vec<(u32, f64)> = engine.search_with_scores("thngs");
+    ///
+    /// assert_eq!(results[0].0, 1);
+    /// ```
+    pub fn search_with_scores(&self, pattern: &str) -> Vec<(Id, f64)> {
+        self.search_tokens_with_scores(&[pattern])
     }
 
     /// Searches pattern tokens and returns ids sorted by relevance.
@@ -211,6 +240,35 @@ where
     /// assert_eq!(results, &[1]);
     /// ```
     pub fn search_tokens(&self, pattern_tokens: &[&str]) -> Vec<Id> {
+        self.search_tokens_with_scores(pattern_tokens)
+            .into_iter()
+            .map(|(id, _score)| id)
+            .collect()
+    }
+
+    /// Searches pattern tokens and returns ids with scores sorted by relevance.
+    ///
+    /// Search engine also applies tokenizer to the
+    /// provided tokens. Use this method when you have
+    /// special tokenization rules in addition to the built-in ones.
+    ///
+    /// Additionally, note that each pattern token must be an ASCII
+    /// string if Levenshtein distance is used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use simsearch::SimSearch;
+    ///
+    /// let mut engine: SimSearch<u32> = SimSearch::new();
+    ///
+    /// engine.insert(1, "Things Fall Apart");
+    ///
+    /// let results: Vec<(u32, f64)> = engine.search_tokens_with_scores(&["thngs"]);
+    ///
+    /// assert_eq!(results[0].0, 1);
+    /// ```
+    pub fn search_tokens_with_scores(&self, pattern_tokens: &[&str]) -> Vec<(Id, f64)> {
         let mut pattern_tokens = self.tokenize(pattern_tokens);
         pattern_tokens.sort();
 
@@ -227,7 +285,7 @@ where
                     // levenshtein_simd_k would return None, so skip calling it.
                     let tlen = token.len() as i32;
                     let plen = pattern_token.len() as i32;
-                    if ((tlen - plen).abs() as u32) > k {
+                    if (tlen - plen).unsigned_abs() > k {
                         f64::MIN
                     } else {
                         // levenshtein_simd_k only works on ASCII byte slices, so the token strings
@@ -242,7 +300,14 @@ where
                 };
 
                 if score > self.option.threshold {
-                    token_scores.insert(token, score);
+                    token_scores
+                        .entry(token.as_str())
+                        .and_modify(|existing_score| {
+                            if score > *existing_score {
+                                *existing_score = score;
+                            }
+                        })
+                        .or_insert(score);
                 }
             }
         }
@@ -255,7 +320,7 @@ where
             }
         }
 
-        let mut result_scores: Vec<(f64, Id)> = result_scores
+        let mut result_scores: Vec<(Id, f64)> = result_scores
             .drain()
             .map(|(id_num, score)| {
                 let id = self
@@ -265,20 +330,18 @@ where
                     // inconsistent state
                     .expect("id at id_num should be there")
                     .to_owned();
-                (score, id)
+                (id, score)
             })
             .collect();
 
-        result_scores.sort_by(|(lhs_score, lhs_id), (rhs_score, rhs_id)| {
+        result_scores.sort_by(|(lhs_id, lhs_score), (rhs_id, rhs_score)| {
             match rhs_score.partial_cmp(lhs_score).unwrap() {
                 Ordering::Equal => lhs_id.cmp(rhs_id),
                 ord => ord,
             }
         });
 
-        let result_ids: Vec<Id> = result_scores.into_iter().map(|(_, id)| id).collect();
-
-        result_ids
+        result_scores
     }
 
     /// Remove an entry by id.
@@ -339,8 +402,6 @@ where
         }
 
         tokens.retain(|token| !token.is_empty());
-
-        
 
         tokens
     }
