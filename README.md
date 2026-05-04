@@ -36,6 +36,10 @@ assert_eq!(results[0].id, 1);
 assert!(results[0].score > 0.0);
 ```
 
+Search returns up to 10 results by default. It supports last-token prefix
+matching and typo tolerance by default, which fits search boxes and autocomplete
+suggestions.
+
 Also try the interactive demo by:
 
 ```
