@@ -260,6 +260,19 @@ fn strong_fuzzy_matches_are_assigned_before_weaker_matches() {
 }
 
 #[test]
+fn token_assignment_uses_higher_similarity_for_fuzzy_matches() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "ac abxxxxxxxxxxxxxxx");
+    engine.insert(2, "ac");
+
+    let results = engine.search("ab");
+
+    assert_eq!(results[0].id, 1);
+    assert!(results[0].score > results[1].score);
+}
+
+#[test]
 fn exact_tokens_rank_before_typos() {
     let mut engine: Index<u32> = Index::new();
 

@@ -17,7 +17,7 @@
 //! assert_eq!(results[0].id, 1);
 //! ```
 
-use std::cmp::{Ordering, max};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
@@ -79,14 +79,12 @@ struct TokenMatch {
     query_index: usize,
     doc_index: usize,
     score: f64,
-    typo_cost: usize,
     exact: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct TokenSimilarity {
     score: f64,
-    typo_cost: usize,
     exact: bool,
 }
 
@@ -371,7 +369,6 @@ where
                         query_index,
                         doc_index,
                         score: similarity.score,
-                        typo_cost: similarity.typo_cost,
                         exact: similarity.exact,
                     });
                 }
@@ -413,7 +410,6 @@ where
     fn compare_token_matches(lhs: &TokenMatch, rhs: &TokenMatch) -> Ordering {
         rhs.exact
             .cmp(&lhs.exact)
-            .then_with(|| lhs.typo_cost.cmp(&rhs.typo_cost))
             .then_with(|| rhs.score.partial_cmp(&lhs.score).unwrap_or(Ordering::Equal))
             .then_with(|| lhs.doc_index.cmp(&rhs.doc_index))
             .then_with(|| lhs.query_index.cmp(&rhs.query_index))
@@ -422,24 +418,11 @@ where
     fn token_similarity(&self, pattern_token: &str, token: &str) -> Option<TokenSimilarity> {
         let exact = pattern_token == token;
         let score = jaro_winkler(token, pattern_token);
-        let typo_cost = Self::typo_cost_from_score(score, max(token.len(), pattern_token.len()));
 
         if score > 0.0 {
-            Some(TokenSimilarity {
-                score,
-                typo_cost,
-                exact,
-            })
+            Some(TokenSimilarity { score, exact })
         } else {
             None
-        }
-    }
-
-    fn typo_cost_from_score(score: f64, len: usize) -> usize {
-        if score >= 1.0 {
-            0
-        } else {
-            ((1.0 - score) * len as f64).ceil() as usize
         }
     }
 
