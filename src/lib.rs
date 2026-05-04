@@ -841,29 +841,56 @@ where
 /// use simsearch::{Options, Index};
 ///
 /// let mut engine: Index<usize> = Index::with_options(
-///     Options::new().case_sensitive(true));
+///     Options::new().limit(20));
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Options {
-    case_sensitive: bool,
-    split_whitespace: bool,
-    separators: Vec<String>,
     limit: usize,
     prefix_search: bool,
     typo_tolerance: bool,
+    case_sensitive: bool,
+    split_whitespace: bool,
+    separators: Vec<String>,
 }
 
 impl Options {
     /// Creates a default configuration.
     pub fn new() -> Self {
         Options {
-            case_sensitive: false,
-            split_whitespace: true,
-            separators: vec![],
             limit: 10,
             prefix_search: true,
             typo_tolerance: true,
+            case_sensitive: false,
+            split_whitespace: true,
+            separators: vec![],
+        }
+    }
+
+    /// Sets the maximum number of results returned by a search.
+    ///
+    /// Defaults to `10`.
+    pub fn limit(self, limit: usize) -> Self {
+        Options { limit, ..self }
+    }
+
+    /// Sets whether the last query token can match indexed token prefixes.
+    ///
+    /// Defaults to `true`.
+    pub fn prefix_search(self, prefix_search: bool) -> Self {
+        Options {
+            prefix_search,
+            ..self
+        }
+    }
+
+    /// Sets whether search tolerates typos using bounded edit distance.
+    ///
+    /// Defaults to `true`.
+    pub fn typo_tolerance(self, typo_tolerance: bool) -> Self {
+        Options {
+            typo_tolerance,
+            ..self
         }
     }
 
@@ -912,33 +939,6 @@ impl Options {
     /// ```
     pub fn separators(self, separators: Vec<String>) -> Self {
         Options { separators, ..self }
-    }
-
-    /// Sets the maximum number of results returned by a search.
-    ///
-    /// Defaults to `10`.
-    pub fn limit(self, limit: usize) -> Self {
-        Options { limit, ..self }
-    }
-
-    /// Sets whether the last query token can match indexed token prefixes.
-    ///
-    /// Defaults to `true`.
-    pub fn prefix_search(self, prefix_search: bool) -> Self {
-        Options {
-            prefix_search,
-            ..self
-        }
-    }
-
-    /// Sets whether search tolerates typos using bounded edit distance.
-    ///
-    /// Defaults to `true`.
-    pub fn typo_tolerance(self, typo_tolerance: bool) -> Self {
-        Options {
-            typo_tolerance,
-            ..self
-        }
     }
 }
 
