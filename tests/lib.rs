@@ -332,6 +332,28 @@ fn last_query_term_matches_prefixes() {
 }
 
 #[test]
+fn last_query_term_matches_typo_prefixes() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "things fall apart");
+
+    let results = ids(engine.search("thng"));
+
+    assert_eq!(results, vec![1]);
+}
+
+#[test]
+fn typo_prefixes_use_prefix_search_option() {
+    let mut engine: Index<u32> = Index::with_options(Options::new().prefix_search(false));
+
+    engine.insert(1, "things fall apart");
+
+    let results = engine.search("thng");
+
+    assert!(results.is_empty());
+}
+
+#[test]
 fn prefix_search_can_be_disabled() {
     let mut engine: Index<u32> = Index::with_options(Options::new().prefix_search(false));
 

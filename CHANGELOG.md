@@ -39,7 +39,7 @@ can be indexed from multiple parts without custom tokenization.
 ### Changed
 
 - Search now uses a positional inverted index with exact, last-token prefix,
-  and bounded typo-tolerant term expansion.
+  typo-tolerant prefix, and bounded typo-tolerant term expansion.
 - Search results are ranked by a single normalized relevance score in the
   `0.0..=1.0` range.
 - Low-quality matches are allowed, but they receive lower scores and rank behind

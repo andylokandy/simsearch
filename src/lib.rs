@@ -312,8 +312,9 @@ where
     /// The query is tokenized according to the index options.
     /// By default, whitespace, including tabs, is treated as a separator.
     /// Use [`Options`] to change tokenization behavior.
-    /// Search matches exact terms, the last query term as a prefix, and
-    /// typo-tolerant terms when those options are enabled.
+    /// Search matches exact terms, typo-tolerant terms, and the last query
+    /// term as a prefix, including typo-tolerant prefixes when both options are
+    /// enabled.
     ///
     /// # Examples
     ///
@@ -581,6 +582,10 @@ where
                             exact: false,
                         },
                     );
+                } else if self.options.prefix_search && prefix_search {
+                    if let Some(similarity) = Self::prefix_typo_similarity(pattern_token, term) {
+                        Self::insert_candidate(&mut candidates, term, similarity);
+                    }
                 }
             }
         }
@@ -654,10 +659,25 @@ where
         1.0 - typo_cost as f64 / (len + 1) as f64
     }
 
+    fn prefix_typo_similarity(pattern_token: &str, term: &str) -> Option<TokenSimilarity> {
+        let max_typos = Self::allowed_typos(pattern_token);
+        let prefix_len = pattern_token.chars().count() + max_typos;
+        let term_prefix: String = term.chars().take(prefix_len).collect();
+        let typo_cost = Self::edit_distance_at_most(pattern_token, &term_prefix, max_typos)?;
+        let score = Self::typo_score(pattern_token, &term_prefix, typo_cost)
+            .min(Self::prefix_score(pattern_token, term));
+
+        Some(TokenSimilarity {
+            score,
+            typo_cost,
+            exact: false,
+        })
+    }
+
     fn allowed_typos(token: &str) -> usize {
         match token.chars().count() {
-            0..=4 => 0,
-            5..=8 => 1,
+            0..=2 => 0,
+            3..=5 => 1,
             _ => 2,
         }
     }
