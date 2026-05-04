@@ -1,6 +1,6 @@
 use std::fs::File;
 
-use simsearch::{SearchOptions, SimSearch};
+use simsearch::Index;
 
 fn load_books() -> Vec<String> {
     let mut file = File::open("./books.json").unwrap();
@@ -17,7 +17,7 @@ fn add_books(bencher: divan::Bencher) {
     let books = load_books();
 
     bencher.bench(|| {
-        let mut engine = SimSearch::new();
+        let mut engine = Index::new();
 
         for title in &books {
             engine.insert(title, title);
@@ -30,20 +30,7 @@ fn add_books(bencher: divan::Bencher) {
 #[divan::bench]
 fn search_jaro_winkler(bencher: divan::Bencher) {
     let books = load_books();
-    let mut engine = SimSearch::new();
-
-    for title in &books {
-        engine.insert(title, title);
-    }
-
-    bencher.bench(|| engine.search("odl sea"));
-}
-
-#[divan::bench]
-fn search_levenshtein(bencher: divan::Bencher) {
-    let books = load_books();
-    let options = SearchOptions::new().levenshtein(true);
-    let mut engine = SimSearch::new_with(options);
+    let mut engine = Index::new();
 
     for title in &books {
         engine.insert(title, title);
