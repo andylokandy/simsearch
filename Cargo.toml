@@ -1,11 +1,12 @@
 [package]
 authors = ["andylokandy <andylokandy@hotmail.com>"]
-edition = "2018"
+edition = "2024"
 name = "simsearch"
-version = "0.3.0"
+version = "0.4.0"
+rust-version = "1.85"
 license = "MIT/Apache-2.0"
 
-description = "A simple and lightweight fuzzy search engine that works in memory, searching for similar strings (a pun here)."
+description = "A small in-memory fuzzy search index for embedded autocomplete and search suggestions."
 documentation = "https://docs.rs/simsearch"
 repository = "https://github.com/andylokandy/simsearch-rs"
 homepage = "https://github.com/andylokandy/simsearch-rs"
@@ -17,7 +18,6 @@ categories = ["algorithms", "text-processing"]
 
 [dependencies]
 strsim = "0.11"
-triple_accel = "0.4"
 
 [dependencies.serde]
 version = "1.0"

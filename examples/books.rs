@@ -2,11 +2,11 @@ use std::fs::File;
 
 use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
 use inquire::{
-    autocompletion::{Autocomplete, Replacement},
     CustomUserError, Text,
+    autocompletion::{Autocomplete, Replacement},
 };
 
-use simsearch::SimSearch;
+use simsearch::Index;
 
 fn main() {
     inquire::set_global_render_config(get_render_config());
@@ -14,14 +14,14 @@ fn main() {
     Text::new("Search for a book:")
         .with_autocomplete(BookSearcher::load())
         .with_help_message("Try typing 'old man'")
-        .with_page_size(15)
+        .with_page_size(10)
         .prompt()
         .ok();
 }
 
 #[derive(Clone)]
 pub struct BookSearcher {
-    engine: SimSearch<String>,
+    engine: Index<String>,
 }
 
 impl BookSearcher {
@@ -34,7 +34,7 @@ impl BookSearcher {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect::<Vec<_>>();
-        let mut engine = SimSearch::new();
+        let mut engine = Index::new();
 
         for title in books {
             engine.insert(title.clone(), &title);
@@ -46,25 +46,33 @@ impl BookSearcher {
 
 impl Autocomplete for BookSearcher {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
-        Ok(self.engine.search(input))
+        Ok(self
+            .engine
+            .search(input)
+            .into_iter()
+            .map(|hit| format!("{:.3}  {}", hit.score, hit.id))
+            .collect())
     }
 
     fn get_completion(
         &mut self,
         _: &str,
-        _: Option<String>,
+        suggestion: Option<String>,
     ) -> Result<Replacement, CustomUserError> {
-        Ok(None)
+        Ok(suggestion.and_then(|suggestion| {
+            suggestion
+                .split_once("  ")
+                .map(|(_, title)| title.to_string())
+        }))
     }
 }
 
 fn get_render_config() -> RenderConfig<'static> {
-    let mut render_config = RenderConfig::default();
-
-    render_config.prompt_prefix = Styled::new(">").with_fg(Color::LightRed);
-    render_config.highlighted_option_prefix = Styled::new("*").with_fg(Color::LightYellow);
-    render_config.option = StyleSheet::new().with_fg(Color::DarkBlue);
-    render_config.help_message = StyleSheet::new().with_fg(Color::LightYellow);
-
-    render_config
+    RenderConfig {
+        prompt_prefix: Styled::new(">").with_fg(Color::LightRed),
+        highlighted_option_prefix: Styled::new("*").with_fg(Color::LightYellow),
+        option: StyleSheet::new().with_fg(Color::DarkBlue),
+        help_message: StyleSheet::new().with_fg(Color::LightYellow),
+        ..Default::default()
+    }
 }

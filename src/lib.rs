@@ -1,51 +1,45 @@
-//! A simple and lightweight fuzzy search engine that works in memory, searching for
-//! similar strings (a pun here).
+//! A small in-memory fuzzy search index for embedded autocomplete and search
+//! suggestions.
 //!
 //! # Examples
 //!
 //! ```
-//! use simsearch::SimSearch;
+//! use simsearch::Index;
 //!
-//! let mut engine: SimSearch<u32> = SimSearch::new();
+//! let mut engine: Index<u32> = Index::new();
 //!
 //! engine.insert(1, "Things Fall Apart");
 //! engine.insert(2, "The Old Man and the Sea");
 //! engine.insert(3, "James Joyce");
 //!
-//! let results: Vec<u32> = engine.search("thngs");
+//! let results = engine.search("thngs");
 //!
-//! assert_eq!(results, &[1]);
-//! ```
-//!
-//! By default, Jaro-Winkler distance is used. An alternative Levenshtein distance, which is
-//! SIMD-accelerated but only works for ASCII byte strings, can be specified with `SearchOptions`:
-//!
-//! ```
-//! use simsearch::{SimSearch, SearchOptions};
-//!
-//! let options = SearchOptions::new().levenshtein(true);
-//! let mut engine: SimSearch<u32> = SimSearch::new_with(options);
+//! assert_eq!(results[0].id, 1);
 //! ```
 
-use std::cmp::{max, Ordering};
-use std::collections::HashMap;
-use std::f64;
+use std::cmp::{Ordering, max};
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
 use strsim::jaro_winkler;
-use triple_accel::levenshtein::levenshtein_simd_k;
+
+const QUALITY_WEIGHT: f64 = 0.70;
+const COVERAGE_WEIGHT: f64 = 0.15;
+const PROXIMITY_WEIGHT: f64 = 0.08;
+const EXACTNESS_WEIGHT: f64 = 0.04;
+const POSITION_WEIGHT: f64 = 0.03;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// The simple search engine.
+/// An in-memory fuzzy search index.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct SimSearch<Id>
+pub struct Index<Id>
 where
-    Id: Eq + PartialEq + Clone + Hash + Ord,
+    Id: Eq + Clone + Hash,
 {
-    option: SearchOptions,
+    options: Options,
     id_num_counter: usize,
     ids_map: HashMap<Id, usize>,
     reverse_ids_map: HashMap<usize, Id>,
@@ -53,28 +47,140 @@ where
     reverse_map: HashMap<String, Vec<usize>>,
 }
 
-impl<Id> SimSearch<Id>
-where
-    Id: Eq + PartialEq + Clone + Hash + Ord,
-{
-    /// Creates search engine with default options.
-    pub fn new() -> Self {
-        Self::new_with(SearchOptions::new())
+/// A search result with its normalized relevance score.
+///
+/// Scores range from `0.0` to `1.0` and are meaningful for comparing results
+/// from the same search query. Results are sorted by this score, with insertion
+/// order used as the final tie-breaker.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Hit<Id> {
+    /// The id associated with the matched entry.
+    pub id: Id,
+    /// A normalized relevance score in the `0.0..=1.0` range.
+    pub score: f64,
+}
+
+#[derive(Debug, Clone)]
+struct RankedResult<Id> {
+    id_num: usize,
+    id: Id,
+    rank: Rank,
+}
+
+#[derive(Debug, Clone)]
+struct Rank {
+    score: f64,
+}
+
+#[derive(Debug, Clone)]
+struct TokenMatch {
+    query_index: usize,
+    doc_index: usize,
+    score: f64,
+    typo_cost: usize,
+    exact: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TokenSimilarity {
+    score: f64,
+    typo_cost: usize,
+    exact: bool,
+}
+
+impl Rank {
+    fn from_matches(matches: &[TokenMatch], query_len: usize, doc_len: usize) -> Self {
+        let matched_terms = matches.len();
+        let proximity_cost = Self::proximity_cost(matches, doc_len);
+        let first_position = matches
+            .iter()
+            .map(|token_match| token_match.doc_index)
+            .min()
+            .unwrap_or(usize::MAX);
+        let exact_terms = matches
+            .iter()
+            .filter(|token_match| token_match.exact)
+            .count();
+        let quality = matches
+            .iter()
+            .map(|token_match| token_match.score)
+            .sum::<f64>()
+            / query_len as f64;
+
+        let coverage = matched_terms as f64 / query_len as f64;
+        let proximity_score = if matched_terms < 2 {
+            coverage
+        } else {
+            1.0 / (1.0 + proximity_cost as f64 / (matched_terms - 1) as f64)
+        };
+        let exactness = exact_terms as f64 / query_len as f64;
+        let position_score = Self::position_score(first_position, doc_len);
+        let weighted_bonus = QUALITY_WEIGHT
+            + COVERAGE_WEIGHT * coverage
+            + PROXIMITY_WEIGHT * proximity_score
+            + EXACTNESS_WEIGHT * exactness
+            + POSITION_WEIGHT * position_score;
+        let score = quality * weighted_bonus;
+
+        Rank {
+            score: score.clamp(0.0, 1.0),
+        }
     }
 
-    /// Creates search engine with custom options.
+    fn proximity_cost(matches: &[TokenMatch], doc_len: usize) -> usize {
+        if matches.len() < 2 {
+            return 0;
+        }
+
+        let mut cost = 0;
+        for window in matches.windows(2) {
+            let lhs = window[0].doc_index;
+            let rhs = window[1].doc_index;
+            if rhs > lhs {
+                cost += rhs - lhs - 1;
+            } else {
+                cost += doc_len + lhs - rhs + 1;
+            }
+        }
+        cost
+    }
+
+    fn position_score(first_position: usize, doc_len: usize) -> f64 {
+        if first_position >= doc_len {
+            return 0.0;
+        }
+
+        if doc_len <= 1 {
+            return 1.0;
+        }
+
+        1.0 - first_position as f64 / (doc_len - 1) as f64
+    }
+}
+
+impl<Id> Index<Id>
+where
+    Id: Eq + Clone + Hash,
+{
+    /// Creates an index with default options.
+    pub fn new() -> Self {
+        Self::with_options(Options::new())
+    }
+
+    /// Creates an index with custom options.
     ///
     /// # Examples
     ///
     /// ```
-    /// use simsearch::{SearchOptions, SimSearch};
+    /// use simsearch::{Options, Index};
     ///
-    /// let mut engine: SimSearch<usize> = SimSearch::new_with(
-    ///     SearchOptions::new().case_sensitive(true));
+    /// let mut engine: Index<usize> = Index::with_options(
+    ///     Options::new().case_sensitive(true));
     /// ```
-    pub fn new_with(option: SearchOptions) -> Self {
-        SimSearch {
-            option,
+    pub fn with_options(options: Options) -> Self {
+        Index {
+            options,
             id_num_counter: 0,
             ids_map: HashMap::new(),
             reverse_ids_map: HashMap::new(),
@@ -83,27 +189,24 @@ where
         }
     }
 
-    /// Inserts an entry into search engine.
+    /// Inserts an entry into the index.
     ///
     /// Input will be tokenized according to the search option.
-    /// By default whitespaces(including tabs) are considered as stop words,
-    /// you can change the behavior by providing `SearchOptions`.
+    /// By default whitespaces(including tabs) are considered as separators,
+    /// you can change the behavior by providing `Options`.
     ///
     /// Insert with an existing id updates the content.
     ///
     /// **Note that** id is not searchable. Add id to the contents if you would
     /// like to perform search on it.
     ///
-    /// Additionally, note that content must be an ASCII string if Levenshtein
-    /// distance is used.
-    ///
     /// # Examples
     ///
     /// ```
-    /// use simsearch::{SearchOptions, SimSearch};
+    /// use simsearch::{Options, Index};
     ///
-    /// let mut engine: SimSearch<&str> = SimSearch::new_with(
-    ///     SearchOptions::new().stop_words(vec![",".to_string(), ".".to_string()]));
+    /// let mut engine: Index<&str> = Index::with_options(
+    ///     Options::new().separators(vec![",".to_string(), ".".to_string()]));
     ///
     /// engine.insert("BoJack Horseman", "BoJack Horseman, an American
     /// adult animated comedy-drama series created by Raphael Bob-Waksberg.
@@ -112,42 +215,59 @@ where
     /// Alison Brie, Paul F. Tompkins, and Aaron Paul.");
     /// ```
     pub fn insert(&mut self, id: Id, content: &str) {
-        self.insert_tokens(id, &[content])
+        let tokens = self.tokenize(&[content]);
+        self.insert_normalized_tokens(id, tokens)
     }
 
-    /// Inserts entry tokens into search engine.
+    /// Inserts an entry with multiple searchable fields into the index.
     ///
-    /// Search engine also applies tokenizer to the
-    /// provided tokens. Use this method when you have
-    /// special tokenization rules in addition to the built-in ones.
+    /// Each field is tokenized with the same built-in tokenizer used by
+    /// [`Index::insert`]. This is useful when an item has several searchable
+    /// fields, such as a title, author, tags, or aliases.
     ///
     /// Insert with an existing id updates the content.
     ///
     /// **Note that** id is not searchable. Add id to the contents if you would
     /// like to perform search on it.
     ///
-    /// Additionally, note that each token must be an ASCII string if Levenshtein
-    /// distance is used.
-    ///
     /// # Examples
     ///
     /// ```
-    /// use simsearch::SimSearch;
+    /// use simsearch::Index;
     ///
-    /// let mut engine: SimSearch<&str> = SimSearch::new();
+    /// let mut engine: Index<&str> = Index::new();
     ///
-    /// engine.insert_tokens("Arya Stark", &["Arya Stark", "a fictional
-    /// character in American author George R. R", "portrayed by English actress."]);
-    pub fn insert_tokens(&mut self, id: Id, tokens: &[&str]) {
+    /// engine.insert_many("A Game of Thrones", [
+    ///     "A Game of Thrones",
+    ///     "George R. R. Martin",
+    ///     "fantasy",
+    /// ]);
+    ///
+    /// let results = engine.search("martin");
+    ///
+    /// assert_eq!(results[0].id, "A Game of Thrones");
+    /// ```
+    pub fn insert_many<I, S>(&mut self, id: Id, fields: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let fields: Vec<String> = fields
+            .into_iter()
+            .map(|field| field.as_ref().to_string())
+            .collect();
+        let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
+        let tokens = self.tokenize(&fields);
+        self.insert_normalized_tokens(id, tokens)
+    }
+
+    fn insert_normalized_tokens(&mut self, id: Id, tokens: Vec<String>) {
         self.remove(&id);
 
         let id_num = self.id_num_counter;
         self.ids_map.insert(id.clone(), id_num);
         self.reverse_ids_map.insert(id_num, id);
         self.id_num_counter += 1;
-
-        let mut tokens = self.tokenize(tokens);
-        tokens.sort();
 
         for token in tokens.clone() {
             self.reverse_map
@@ -159,105 +279,49 @@ where
         self.forward_map.insert(id_num, tokens);
     }
 
-    /// Searches pattern and returns ids sorted by relevance.
+    /// Searches pattern and returns hits sorted by relevance.
     ///
     /// Pattern will be tokenized according to the search option.
-    /// By default whitespaces(including tabs) are considered as stop words,
-    /// you can change the behavior by providing `SearchOptions`.
-    ///
-    /// Additionally, note that pattern must be an ASCII string if Levenshtein
-    /// distance is used.
+    /// By default whitespaces(including tabs) are considered as separators,
+    /// you can change the behavior by providing `Options`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use simsearch::SimSearch;
+    /// use simsearch::Index;
     ///
-    /// let mut engine: SimSearch<u32> = SimSearch::new();
+    /// let mut engine: Index<u32> = Index::new();
     ///
     /// engine.insert(1, "Things Fall Apart");
     /// engine.insert(2, "The Old Man and the Sea");
     /// engine.insert(3, "James Joyce");
     ///
-    /// let results: Vec<u32> = engine.search("thngs apa");
+    /// let results = engine.search("thngs apa");
     ///
-    /// assert_eq!(results, &[1]);
-    pub fn search(&self, pattern: &str) -> Vec<Id> {
-        self.search_tokens(&[pattern])
+    /// assert_eq!(results[0].id, 1);
+    /// assert!(results[0].score > 0.0);
+    /// ```
+    pub fn search(&self, pattern: &str) -> Vec<Hit<Id>> {
+        self.search_ranked(self.tokenize(&[pattern]))
+            .into_iter()
+            .map(|result| Hit {
+                id: result.id,
+                score: result.rank.score,
+            })
+            .collect()
     }
 
-    /// Searches pattern tokens and returns ids sorted by relevance.
-    ///
-    /// Search engine also applies tokenizer to the
-    /// provided tokens. Use this method when you have
-    /// special tokenization rules in addition to the built-in ones.
-    ///
-    /// Additionally, note that each pattern token must be an ASCII
-    /// string if Levenshtein distance is used.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use simsearch::SimSearch;
-    ///
-    /// let mut engine: SimSearch<u32> = SimSearch::new();
-    ///
-    /// engine.insert(1, "Things Fall Apart");
-    /// engine.insert(2, "The Old Man and the Sea");
-    /// engine.insert(3, "James Joyce");
-    ///
-    /// let results: Vec<u32> = engine.search_tokens(&["thngs", "apa"]);
-    ///
-    /// assert_eq!(results, &[1]);
-    /// ```
-    pub fn search_tokens(&self, pattern_tokens: &[&str]) -> Vec<Id> {
-        let mut pattern_tokens = self.tokenize(pattern_tokens);
-        pattern_tokens.sort();
-
-        let mut token_scores: HashMap<&str, f64> = HashMap::new();
-
-        for pattern_token in pattern_tokens {
-            for token in self.reverse_map.keys() {
-                let score = if self.option.levenshtein {
-                    let len = max(token.len(), pattern_token.len()) as f64;
-                    // calculate k (based on the threshold) to bound the Levenshtein distance
-                    let k = ((1.0 - self.option.threshold) * len).ceil() as u32;
-
-                    // cheap prefilter: if length difference already exceeds k,
-                    // levenshtein_simd_k would return None, so skip calling it.
-                    let tlen = token.len() as i32;
-                    let plen = pattern_token.len() as i32;
-                    if ((tlen - plen).abs() as u32) > k {
-                        f64::MIN
-                    } else {
-                        // levenshtein_simd_k only works on ASCII byte slices, so the token strings
-                        // are directly treated as byte slices
-                        match levenshtein_simd_k(token.as_bytes(), pattern_token.as_bytes(), k) {
-                            Some(dist) => 1.0 - if len == 0.0 { 0.0 } else { (dist as f64) / len },
-                            None => f64::MIN,
-                        }
-                    }
-                } else {
-                    jaro_winkler(token, &pattern_token)
-                };
-
-                if score > self.option.threshold {
-                    token_scores.insert(token, score);
-                }
-            }
+    fn search_ranked(&self, pattern_tokens: Vec<String>) -> Vec<RankedResult<Id>> {
+        if pattern_tokens.is_empty() || self.options.limit == 0 {
+            return Vec::new();
         }
 
-        let mut result_scores: HashMap<usize, f64> = HashMap::new();
-
-        for (token, score) in token_scores.drain() {
-            for id_num in &self.reverse_map[token] {
-                *result_scores.entry(*id_num).or_insert(0.) += score;
-            }
-        }
-
-        let mut result_scores: Vec<(f64, Id)> = result_scores
-            .drain()
-            .map(|(id_num, score)| {
+        let candidates = self.collect_candidates(&pattern_tokens);
+        let mut results: Vec<RankedResult<Id>> = candidates
+            .into_iter()
+            .filter_map(|id_num| {
+                let tokens = self.forward_map.get(&id_num)?;
+                let rank = self.rank_document(&pattern_tokens, tokens)?;
                 let id = self
                     .reverse_ids_map
                     .get(&id_num)
@@ -265,20 +329,123 @@ where
                     // inconsistent state
                     .expect("id at id_num should be there")
                     .to_owned();
-                (score, id)
+                Some(RankedResult { id_num, id, rank })
             })
             .collect();
 
-        result_scores.sort_by(|(lhs_score, lhs_id), (rhs_score, rhs_id)| {
-            match rhs_score.partial_cmp(lhs_score).unwrap() {
-                Ordering::Equal => lhs_id.cmp(rhs_id),
-                ord => ord,
+        results.sort_by(|lhs, rhs| self.compare_ranked_results(lhs, rhs));
+        results.truncate(self.options.limit);
+        results
+    }
+
+    fn collect_candidates(&self, pattern_tokens: &[String]) -> HashSet<usize> {
+        let mut candidates = HashSet::new();
+        for pattern_token in pattern_tokens {
+            for (token, id_nums) in &self.reverse_map {
+                if self.token_similarity(pattern_token, token).is_some() {
+                    for id_num in id_nums {
+                        candidates.insert(*id_num);
+                    }
+                }
             }
+        }
+        candidates
+    }
+
+    fn rank_document(&self, pattern_tokens: &[String], tokens: &[String]) -> Option<Rank> {
+        if tokens.is_empty() {
+            return None;
+        }
+
+        let mut matches_by_query = Vec::with_capacity(pattern_tokens.len());
+        for (query_index, pattern_token) in pattern_tokens.iter().enumerate() {
+            let mut matches = Vec::new();
+            for (doc_index, token) in tokens.iter().enumerate() {
+                if let Some(similarity) = self.token_similarity(pattern_token, token) {
+                    matches.push(TokenMatch {
+                        query_index,
+                        doc_index,
+                        score: similarity.score,
+                        typo_cost: similarity.typo_cost,
+                        exact: similarity.exact,
+                    });
+                }
+            }
+            matches.sort_by(Self::compare_token_matches);
+            matches_by_query.push(matches);
+        }
+
+        let mut query_order: Vec<usize> = (0..pattern_tokens.len()).collect();
+        query_order.sort_by(|lhs, rhs| {
+            matches_by_query[*lhs]
+                .len()
+                .cmp(&matches_by_query[*rhs].len())
+                .then_with(|| lhs.cmp(rhs))
         });
 
-        let result_ids: Vec<Id> = result_scores.into_iter().map(|(_, id)| id).collect();
+        let mut used_tokens = vec![false; tokens.len()];
+        let mut selected = Vec::new();
+        for query_index in query_order {
+            for token_match in &matches_by_query[query_index] {
+                if !used_tokens[token_match.doc_index] {
+                    used_tokens[token_match.doc_index] = true;
+                    selected.push(token_match.clone());
+                    break;
+                }
+            }
+        }
 
-        result_ids
+        if selected.is_empty() {
+            return None;
+        }
+
+        selected.sort_by_key(|token_match| token_match.query_index);
+        Some(Rank::from_matches(
+            &selected,
+            pattern_tokens.len(),
+            tokens.len(),
+        ))
+    }
+
+    fn compare_ranked_results(&self, lhs: &RankedResult<Id>, rhs: &RankedResult<Id>) -> Ordering {
+        rhs.rank
+            .score
+            .partial_cmp(&lhs.rank.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| lhs.id_num.cmp(&rhs.id_num))
+    }
+
+    fn compare_token_matches(lhs: &TokenMatch, rhs: &TokenMatch) -> Ordering {
+        rhs.exact
+            .cmp(&lhs.exact)
+            .then_with(|| lhs.typo_cost.cmp(&rhs.typo_cost))
+            .then_with(|| rhs.score.partial_cmp(&lhs.score).unwrap_or(Ordering::Equal))
+            .then_with(|| lhs.doc_index.cmp(&rhs.doc_index))
+            .then_with(|| lhs.query_index.cmp(&rhs.query_index))
+    }
+
+    fn token_similarity(&self, pattern_token: &str, token: &str) -> Option<TokenSimilarity> {
+        let exact = pattern_token == token;
+        let score = jaro_winkler(token, pattern_token);
+        let typo_cost = Self::typo_cost_from_score(score, max(token.len(), pattern_token.len()));
+
+        if score > 0.0 {
+            Some(TokenSimilarity {
+                score,
+                typo_cost,
+                exact,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn typo_cost_from_score(score: f64, len: usize) -> usize {
+        if score >= 1.0 {
+            0
+        } else {
+            ((1.0 - score) * len as f64).ceil() as usize
+        }
     }
 
     /// Remove an entry by id.
@@ -309,18 +476,9 @@ where
     }
 
     fn tokenize(&self, tokens: &[&str]) -> Vec<String> {
-        let tokens: Vec<String> = tokens
-            .iter()
-            .map(|token| {
-                if self.option.case_sensitive {
-                    token.to_string()
-                } else {
-                    token.to_lowercase()
-                }
-            })
-            .collect();
+        let tokens = self.normalize_tokens(tokens);
 
-        let mut tokens: Vec<String> = if self.option.stop_whitespace {
+        let mut tokens: Vec<String> = if self.options.split_whitespace {
             tokens
                 .iter()
                 .flat_map(|token| token.split_whitespace())
@@ -330,141 +488,133 @@ where
             tokens
         };
 
-        for stop_word in &self.option.stop_words {
+        for separator in &self.options.separators {
             tokens = tokens
                 .iter()
-                .flat_map(|token| token.split_terminator(stop_word.as_str()))
+                .flat_map(|token| token.split_terminator(separator.as_str()))
                 .map(|token| token.to_string())
                 .collect();
         }
 
         tokens.retain(|token| !token.is_empty());
 
-        
+        tokens
+    }
+
+    fn normalize_tokens(&self, tokens: &[&str]) -> Vec<String> {
+        let mut tokens: Vec<String> = tokens
+            .iter()
+            .map(|token| {
+                if self.options.case_sensitive {
+                    token.to_string()
+                } else {
+                    token.to_lowercase()
+                }
+            })
+            .collect();
+
+        tokens.retain(|token| !token.is_empty());
 
         tokens
     }
 }
 
-/// Options and flags that configuring the search engine.
+/// Options for configuring the search index.
 ///
 /// # Examples
 ///
 /// ```
-/// use simsearch::{SearchOptions, SimSearch};
+/// use simsearch::{Options, Index};
 ///
-/// let mut engine: SimSearch<usize> = SimSearch::new_with(
-///     SearchOptions::new().case_sensitive(true));
+/// let mut engine: Index<usize> = Index::with_options(
+///     Options::new().case_sensitive(true));
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct SearchOptions {
+pub struct Options {
     case_sensitive: bool,
-    stop_whitespace: bool,
-    stop_words: Vec<String>,
-    threshold: f64,
-    levenshtein: bool,
+    split_whitespace: bool,
+    separators: Vec<String>,
+    limit: usize,
 }
 
-impl SearchOptions {
+impl Options {
     /// Creates a default configuration.
     pub fn new() -> Self {
-        SearchOptions {
+        Options {
             case_sensitive: false,
-            stop_whitespace: true,
-            stop_words: vec![],
-            threshold: 0.8,
-            levenshtein: false,
+            split_whitespace: true,
+            separators: vec![],
+            limit: 10,
         }
     }
 
-    /// Sets whether search engine is case sensitive or not.
+    /// Sets whether the index is case sensitive.
     ///
     /// Defaults to `false`.
     pub fn case_sensitive(self, case_sensitive: bool) -> Self {
-        SearchOptions {
+        Options {
             case_sensitive,
             ..self
         }
     }
 
-    /// Sets the whether search engine splits tokens on whitespace or not.
-    /// The **whitespace** here includes tab, returns and so forth.
+    /// Sets whether the index splits tokens on whitespace.
+    /// Whitespace includes spaces, tabs, returns, and similar characters.
     ///
     /// See also [`std::str::split_whitespace()`](https://doc.rust-lang.org/std/primitive.str.html#method.split_whitespace).
     ///
     /// Defaults to `true`.
-    pub fn stop_whitespace(self, stop_whitespace: bool) -> Self {
-        SearchOptions {
-            stop_whitespace,
+    pub fn split_whitespace(self, split_whitespace: bool) -> Self {
+        Options {
+            split_whitespace,
             ..self
         }
     }
 
-    /// Sets the custom token stop word.
+    /// Sets custom token separators.
     ///
-    /// This option enables tokenizer to split contents
-    /// and search words by the extra list of custom stop words.
+    /// This option enables the tokenizer to split indexed fields and search
+    /// queries by the extra list of custom separators.
     ///
     /// Defaults to `&[]`.
     ///
     /// # Examples
     /// ```
-    /// use simsearch::{SearchOptions, SimSearch};
+    /// use simsearch::{Options, Index};
     ///
-    /// let mut engine: SimSearch<usize> = SimSearch::new_with(
-    ///     SearchOptions::new().stop_words(vec!["/".to_string(), "\\".to_string()]));
+    /// let mut engine: Index<usize> = Index::with_options(
+    ///     Options::new().separators(vec!["/".to_string(), "\\".to_string()]));
     ///
     /// engine.insert(1, "the old/man/and/the sea");
     ///
     /// let results = engine.search("old");
     ///
-    /// assert_eq!(results, &[1]);
+    /// assert_eq!(results[0].id, 1);
     /// ```
-    pub fn stop_words(self, stop_words: Vec<String>) -> Self {
-        SearchOptions { stop_words, ..self }
+    pub fn separators(self, separators: Vec<String>) -> Self {
+        Options { separators, ..self }
     }
 
-    /// Sets the threshold for search scoring.
+    /// Sets the maximum number of results returned by a search.
     ///
-    /// Search results will be sorted by their Jaro winkler similarity scores.
-    /// Scores ranges from 0 to 1 where the 1 indicates the most relevant.
-    /// Only the entries with scores greater than the threshold will be returned.
-    ///
-    /// Defaults to `0.8`.
-    pub fn threshold(self, threshold: f64) -> Self {
-        SearchOptions { threshold, ..self }
-    }
-
-    /// Sets whether Levenshtein distance, which is SIMD-accelerated, should be
-    /// used instead of the default Jaro-Winkler distance.
-    ///
-    /// The implementation of Levenshtein distance is very fast but cannot handle Unicode
-    /// strings, unlike the default Jaro-Winkler distance. The strings are treated as byte
-    /// slices with Levenshtein distance, which means that the calculated score may be
-    /// incorrectly lower for Unicode strings, where each character is represented with
-    /// multiple bytes.
-    ///
-    /// Defaults to `false`.
-    pub fn levenshtein(self, levenshtein: bool) -> Self {
-        SearchOptions {
-            levenshtein,
-            ..self
-        }
+    /// Defaults to `10`.
+    pub fn limit(self, limit: usize) -> Self {
+        Options { limit, ..self }
     }
 }
 
-impl<Id> Default for SimSearch<Id>
+impl<Id> Default for Index<Id>
 where
-    Id: Eq + PartialEq + Clone + Hash + Ord,
+    Id: Eq + Clone + Hash,
 {
     fn default() -> Self {
-        SimSearch::new()
+        Index::new()
     }
 }
 
-impl Default for SearchOptions {
+impl Default for Options {
     fn default() -> Self {
-        SearchOptions::new()
+        Options::new()
     }
 }
