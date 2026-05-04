@@ -25,6 +25,8 @@ can be indexed from multiple fields without custom tokenization.
 - Added a default result limit of 10. Use `Options::limit(...)` to change it.
 - Removed the `Ord` requirement for IDs. IDs now need `Eq + Clone + Hash`;
   equal-score ties are resolved by insertion order.
+- Search is optimized for short autocomplete queries and uses the first 16
+  query tokens.
 - Bumped the crate to Rust 2024 edition and set MSRV to Rust 1.85.
 
 ### Added
@@ -139,7 +141,7 @@ let results: Vec<_> = index
 ```
 
 Search applies `Options::limit(...)` before caller-side filtering. Increase the
-limit first if you need a larger candidate set before filtering by score.
+limit first if you need more results before filtering by score.
 
 #### Update tokenizer options
 

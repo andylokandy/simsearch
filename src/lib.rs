@@ -17,7 +17,7 @@
 //! assert_eq!(results[0].id, 1);
 //! ```
 
-use std::cmp::{Ordering, max};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
@@ -29,6 +29,8 @@ const PROXIMITY_WEIGHT: f64 = 0.07;
 const EXACTNESS_WEIGHT: f64 = 0.04;
 const POSITION_WEIGHT: f64 = 0.03;
 const SPECIFICITY_WEIGHT: f64 = 0.04;
+const MAX_QUERY_TOKENS: usize = 16;
+const MAX_ASSIGNMENT_STATES: usize = 64;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -79,15 +81,20 @@ struct TokenMatch {
     query_index: usize,
     doc_index: usize,
     score: f64,
-    typo_cost: usize,
     exact: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct TokenSimilarity {
     score: f64,
-    typo_cost: usize,
     exact: bool,
+}
+
+#[derive(Debug, Clone)]
+struct AssignmentState {
+    selected: Vec<TokenMatch>,
+    used_tokens: Vec<bool>,
+    rank: Rank,
 }
 
 impl Rank {
@@ -282,11 +289,15 @@ where
         self.forward_map.insert(id_num, tokens);
     }
 
-    /// Searches pattern and returns hits sorted by relevance.
+    /// Searches pattern and returns up to [`Options::limit`] hits sorted by
+    /// relevance.
     ///
     /// Pattern will be tokenized according to the search option.
     /// By default whitespaces(including tabs) are considered as separators,
     /// you can change the behavior by providing `Options`.
+    ///
+    /// Search is optimized for short autocomplete queries and uses the first
+    /// 16 query tokens.
     ///
     /// # Examples
     ///
@@ -314,7 +325,9 @@ where
             .collect()
     }
 
-    fn search_ranked(&self, pattern_tokens: Vec<String>) -> Vec<RankedResult<Id>> {
+    fn search_ranked(&self, mut pattern_tokens: Vec<String>) -> Vec<RankedResult<Id>> {
+        pattern_tokens.truncate(MAX_QUERY_TOKENS);
+
         if pattern_tokens.is_empty() || self.options.limit == 0 {
             return Vec::new();
         }
@@ -360,48 +373,121 @@ where
             return None;
         }
 
-        let mut matches = Vec::new();
+        let mut matches_by_query = vec![Vec::new(); pattern_tokens.len()];
 
         for (query_index, pattern_token) in pattern_tokens.iter().enumerate() {
             for (doc_index, token) in tokens.iter().enumerate() {
                 if let Some(similarity) = self.token_similarity(pattern_token, token) {
-                    matches.push(TokenMatch {
+                    matches_by_query[query_index].push(TokenMatch {
                         query_index,
                         doc_index,
                         score: similarity.score,
-                        typo_cost: similarity.typo_cost,
                         exact: similarity.exact,
                     });
                 }
             }
         }
 
-        matches.sort_by(Self::compare_token_matches);
-
-        let mut used_queries = vec![false; pattern_tokens.len()];
-        let mut used_tokens = vec![false; tokens.len()];
-        let mut selected = Vec::new();
-
-        for token_match in matches {
-            if !used_queries[token_match.query_index] && !used_tokens[token_match.doc_index] {
-                used_queries[token_match.query_index] = true;
-                used_tokens[token_match.doc_index] = true;
-                selected.push(token_match);
-            }
+        for matches in &mut matches_by_query {
+            matches.sort_by(Self::compare_token_matches);
         }
 
+        let mut selected = Self::select_best_matches(&matches_by_query, tokens.len());
         if selected.is_empty() {
             return None;
         }
 
-
         selected.sort_by_key(|token_match| token_match.query_index);
-        
+
         Some(Rank::from_matches(
             &selected,
             pattern_tokens.len(),
             tokens.len(),
         ))
+    }
+
+    fn select_best_matches(
+        matches_by_query: &[Vec<TokenMatch>],
+        doc_len: usize,
+    ) -> Vec<TokenMatch> {
+        let query_len = matches_by_query.len();
+        let mut query_order: Vec<usize> = (0..query_len).collect();
+        query_order.sort_by(|lhs, rhs| {
+            matches_by_query[*lhs]
+                .len()
+                .cmp(&matches_by_query[*rhs].len())
+                .then_with(|| lhs.cmp(rhs))
+        });
+
+        let mut states = vec![AssignmentState {
+            selected: Vec::new(),
+            used_tokens: vec![false; doc_len],
+            rank: Rank { score: 0.0 },
+        }];
+
+        for query_index in query_order {
+            let matches = &matches_by_query[query_index];
+            if matches.is_empty() {
+                continue;
+            }
+
+            let mut next_states = Vec::new();
+            for state in &states {
+                next_states.push(state.clone());
+
+                for token_match in matches {
+                    if state.used_tokens[token_match.doc_index] {
+                        continue;
+                    }
+
+                    let mut selected = state.selected.clone();
+                    selected.push(token_match.clone());
+                    selected.sort_by_key(|selected_match| selected_match.query_index);
+
+                    let mut used_tokens = state.used_tokens.clone();
+                    used_tokens[token_match.doc_index] = true;
+                    let rank = Rank::from_matches(&selected, query_len, doc_len);
+
+                    next_states.push(AssignmentState {
+                        selected,
+                        used_tokens,
+                        rank,
+                    });
+                }
+            }
+
+            next_states.sort_by(Self::compare_assignment_states);
+            next_states.truncate(MAX_ASSIGNMENT_STATES);
+            states = next_states;
+        }
+
+        states.sort_by(Self::compare_assignment_states);
+        states
+            .into_iter()
+            .next()
+            .map(|state| state.selected)
+            .unwrap_or_default()
+    }
+
+    fn compare_assignment_states(lhs: &AssignmentState, rhs: &AssignmentState) -> Ordering {
+        rhs.rank
+            .score
+            .partial_cmp(&lhs.rank.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| rhs.selected.len().cmp(&lhs.selected.len()))
+            .then_with(|| {
+                let lhs_score = lhs
+                    .selected
+                    .iter()
+                    .map(|token_match| token_match.score)
+                    .sum::<f64>();
+                let rhs_score = rhs
+                    .selected
+                    .iter()
+                    .map(|token_match| token_match.score)
+                    .sum::<f64>();
+                rhs_score.partial_cmp(&lhs_score).unwrap_or(Ordering::Equal)
+            })
     }
 
     fn compare_ranked_results(&self, lhs: &RankedResult<Id>, rhs: &RankedResult<Id>) -> Ordering {
@@ -413,10 +499,10 @@ where
     }
 
     fn compare_token_matches(lhs: &TokenMatch, rhs: &TokenMatch) -> Ordering {
-        rhs.exact
-            .cmp(&lhs.exact)
-            .then_with(|| lhs.typo_cost.cmp(&rhs.typo_cost))
-            .then_with(|| rhs.score.partial_cmp(&lhs.score).unwrap_or(Ordering::Equal))
+        rhs.score
+            .partial_cmp(&lhs.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| rhs.exact.cmp(&lhs.exact))
             .then_with(|| lhs.doc_index.cmp(&rhs.doc_index))
             .then_with(|| lhs.query_index.cmp(&rhs.query_index))
     }
@@ -424,24 +510,11 @@ where
     fn token_similarity(&self, pattern_token: &str, token: &str) -> Option<TokenSimilarity> {
         let exact = pattern_token == token;
         let score = jaro_winkler(token, pattern_token);
-        let typo_cost = Self::typo_cost_from_score(score, max(token.len(), pattern_token.len()));
 
         if score > 0.0 {
-            Some(TokenSimilarity {
-                score,
-                typo_cost,
-                exact,
-            })
+            Some(TokenSimilarity { score, exact })
         } else {
             None
-        }
-    }
-
-    fn typo_cost_from_score(score: f64, len: usize) -> usize {
-        if score >= 1.0 {
-            0
-        } else {
-            ((1.0 - score) * len as f64).ceil() as usize
         }
     }
 

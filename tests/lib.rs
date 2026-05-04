@@ -222,6 +222,97 @@ fn exact_full_match_survives_default_limit() {
 }
 
 #[test]
+fn exact_full_match_survives_small_limit() {
+    let mut engine: Index<u32> = Index::with_options(Options::new().limit(1));
+
+    for id in 0..40 {
+        engine.insert(id, "apple banana");
+    }
+    engine.insert(40, "apple");
+
+    let results = ids(engine.search("apple"));
+
+    assert_eq!(results, vec![40]);
+}
+
+#[test]
+fn multi_term_match_survives_small_limit() {
+    let mut engine: Index<u32> = Index::with_options(Options::new().limit(1));
+
+    for id in 0..40 {
+        engine.insert(id, "apple");
+    }
+    engine.insert(40, "apple banana");
+
+    let results = ids(engine.search("apple banana"));
+
+    assert_eq!(results, vec![40]);
+}
+
+#[test]
+fn duplicate_query_terms_need_distinct_document_tokens_before_limit() {
+    let mut engine: Index<u32> = Index::with_options(Options::new().limit(1));
+
+    for id in 0..40 {
+        engine.insert(id, "apple");
+    }
+    engine.insert(40, "apple apple");
+
+    let results = ids(engine.search("apple apple"));
+
+    assert_eq!(results, vec![40]);
+}
+
+#[test]
+fn duplicate_query_terms_can_use_all_sixteen_query_tokens() {
+    let mut engine: Index<u32> = Index::new();
+    let eight_apples = ["apple"; 8].join(" ");
+    let sixteen_apples = ["apple"; 16].join(" ");
+
+    engine.insert(1, &eight_apples);
+    engine.insert(2, &sixteen_apples);
+
+    let results = ids(engine.search(&sixteen_apples));
+
+    assert_eq!(results[0], 2);
+}
+
+#[test]
+fn duplicate_query_terms_can_match_later_document_tokens() {
+    let mut engine: Index<u32> = Index::new();
+    let leading = ["a"; 16].join(" ");
+    let trailing = ["a"; 15].join(" ");
+    let full = format!("{leading} x {trailing}");
+    let partial = format!("x {}", ["a"; 14].join(" "));
+    let query = format!("x {trailing}");
+
+    engine.insert(1, &full);
+    engine.insert(2, &partial);
+
+    let results = ids(engine.search(&query));
+
+    assert_eq!(results[0], 1);
+}
+
+#[test]
+fn search_uses_first_sixteen_query_tokens() {
+    let mut engine: Index<u32> = Index::new();
+    let first_terms = (0..16)
+        .map(|index| format!("aaaaaaaa{index:02}"))
+        .collect::<Vec<_>>();
+    let mut query_terms = first_terms.clone();
+    query_terms.push("zzzzzzzz".to_string());
+
+    engine.insert(1, &first_terms.join(" "));
+    engine.insert(2, "zzzzzzzz");
+
+    let results = ids(engine.search(&query_terms.join(" ")));
+
+    assert_eq!(results[0], 1);
+    assert!(!results.contains(&2));
+}
+
+#[test]
 fn exact_query_terms_keep_their_matching_document_tokens() {
     let mut engine: Index<u32> = Index::new();
 
@@ -231,6 +322,19 @@ fn exact_query_terms_keep_their_matching_document_tokens() {
     let results = engine.search("ax ac");
 
     assert_eq!(results[0].id, 1);
+    assert!(results[0].score > results[1].score);
+}
+
+#[test]
+fn assignment_can_move_strong_fuzzy_match_to_cover_more_query_terms() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "abaa");
+    engine.insert(2, "abaa acaa");
+
+    let results = engine.search("a b");
+
+    assert_eq!(results[0].id, 2);
     assert!(results[0].score > results[1].score);
 }
 
