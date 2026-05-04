@@ -27,7 +27,7 @@ const PROXIMITY_WEIGHT: f64 = 0.07;
 const EXACTNESS_WEIGHT: f64 = 0.04;
 const POSITION_WEIGHT: f64 = 0.03;
 const SPECIFICITY_WEIGHT: f64 = 0.04;
-const MAX_ASSIGNMENT_STATES: usize = 64;
+const ASSIGNMENT_BEAM_WIDTH: usize = 64;
 
 type PostingMap = HashMap<usize, Vec<usize>>;
 
@@ -479,7 +479,7 @@ where
             }
 
             next_states.sort_by(Self::compare_assignment_states);
-            next_states.truncate(MAX_ASSIGNMENT_STATES);
+            next_states.truncate(ASSIGNMENT_BEAM_WIDTH);
             states = next_states;
         }
 
