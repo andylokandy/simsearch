@@ -23,11 +23,12 @@ use std::hash::Hash;
 
 use strsim::jaro_winkler;
 
-const QUALITY_WEIGHT: f64 = 0.70;
-const COVERAGE_WEIGHT: f64 = 0.15;
-const PROXIMITY_WEIGHT: f64 = 0.08;
+const QUALITY_WEIGHT: f64 = 0.68;
+const COVERAGE_WEIGHT: f64 = 0.14;
+const PROXIMITY_WEIGHT: f64 = 0.07;
 const EXACTNESS_WEIGHT: f64 = 0.04;
 const POSITION_WEIGHT: f64 = 0.03;
+const SPECIFICITY_WEIGHT: f64 = 0.04;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -116,11 +117,13 @@ impl Rank {
         };
         let exactness = exact_terms as f64 / query_len as f64;
         let position_score = Self::position_score(first_position, doc_len);
+        let specificity = matched_terms as f64 / doc_len as f64;
         let weighted_bonus = QUALITY_WEIGHT
             + COVERAGE_WEIGHT * coverage
             + PROXIMITY_WEIGHT * proximity_score
             + EXACTNESS_WEIGHT * exactness
-            + POSITION_WEIGHT * position_score;
+            + POSITION_WEIGHT * position_score
+            + SPECIFICITY_WEIGHT * specificity;
         let score = quality * weighted_bonus;
 
         Rank {
@@ -357,9 +360,8 @@ where
             return None;
         }
 
-        let mut matches_by_query = Vec::with_capacity(pattern_tokens.len());
+        let mut matches = Vec::new();
         for (query_index, pattern_token) in pattern_tokens.iter().enumerate() {
-            let mut matches = Vec::new();
             for (doc_index, token) in tokens.iter().enumerate() {
                 if let Some(similarity) = self.token_similarity(pattern_token, token) {
                     matches.push(TokenMatch {
@@ -371,27 +373,17 @@ where
                     });
                 }
             }
-            matches.sort_by(Self::compare_token_matches);
-            matches_by_query.push(matches);
         }
+        matches.sort_by(Self::compare_token_matches);
 
-        let mut query_order: Vec<usize> = (0..pattern_tokens.len()).collect();
-        query_order.sort_by(|lhs, rhs| {
-            matches_by_query[*lhs]
-                .len()
-                .cmp(&matches_by_query[*rhs].len())
-                .then_with(|| lhs.cmp(rhs))
-        });
-
+        let mut used_queries = vec![false; pattern_tokens.len()];
         let mut used_tokens = vec![false; tokens.len()];
         let mut selected = Vec::new();
-        for query_index in query_order {
-            for token_match in &matches_by_query[query_index] {
-                if !used_tokens[token_match.doc_index] {
-                    used_tokens[token_match.doc_index] = true;
-                    selected.push(token_match.clone());
-                    break;
-                }
+        for token_match in matches {
+            if !used_queries[token_match.query_index] && !used_tokens[token_match.doc_index] {
+                used_queries[token_match.query_index] = true;
+                used_tokens[token_match.doc_index] = true;
+                selected.push(token_match);
             }
         }
 

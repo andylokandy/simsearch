@@ -12,7 +12,8 @@ can be indexed from multiple fields without custom tokenization.
 - Renamed `SearchOptions` to `Options`.
 - Renamed `SimSearch::new_with(...)` to `Index::with_options(...)`.
 - Changed `Index::search(...)` to return `Vec<Hit<Id>>` instead of `Vec<Id>`.
-- Removed `insert_tokens(...)` and `search_tokens(...)`.
+- Removed `insert_tokens(...)`, `search_tokens(...)`,
+  `search_with_scores(...)`, and `search_tokens_with_scores(...)`.
 - Added `insert_many(...)` for entries with multiple searchable fields.
 - Removed `SearchOptions::threshold(...)`. Search results are no longer filtered
   by a threshold; callers can filter by `Hit::score` when needed.
@@ -93,6 +94,9 @@ let ids: Vec<u32> = index
     .collect();
 ```
 
+The old scored search APIs are also replaced by `search(...)`; every returned
+hit includes both `id` and `score`.
+
 #### Replace token APIs with fields
 
 The old token APIs were often used to avoid manually concatenating several
@@ -133,6 +137,9 @@ let results: Vec<_> = index
     .filter(|hit| hit.score >= 0.8)
     .collect();
 ```
+
+Search applies `Options::limit(...)` before caller-side filtering. Increase the
+limit first if you need a larger candidate set before filtering by score.
 
 #### Update tokenizer options
 
