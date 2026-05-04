@@ -167,6 +167,17 @@ fn insert_many_updates_existing_content() {
 }
 
 #[test]
+fn updating_existing_content_prunes_prefix_and_typo_terms() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "things");
+    engine.insert(1, "other");
+
+    assert!(engine.search("thi").is_empty());
+    assert!(engine.search("thngs").is_empty());
+}
+
+#[test]
 fn insert_many_uses_builtin_tokenizer() {
     let mut engine: Index<u32> =
         Index::with_options(Options::new().separators(vec!["/".to_string()]));
@@ -264,15 +275,15 @@ fn duplicate_query_terms_need_distinct_document_tokens_before_limit() {
 }
 
 #[test]
-fn duplicate_query_terms_can_use_all_sixteen_query_tokens() {
+fn duplicate_query_terms_can_use_long_queries() {
     let mut engine: Index<u32> = Index::new();
     let eight_apples = ["apple"; 8].join(" ");
-    let sixteen_apples = ["apple"; 16].join(" ");
+    let many_apples = ["apple"; 16].join(" ");
 
     engine.insert(1, &eight_apples);
-    engine.insert(2, &sixteen_apples);
+    engine.insert(2, &many_apples);
 
-    let results = ids(engine.search(&sixteen_apples));
+    let results = ids(engine.search(&many_apples));
 
     assert_eq!(results[0], 2);
 }
@@ -295,31 +306,61 @@ fn duplicate_query_terms_can_match_later_document_tokens() {
 }
 
 #[test]
-fn search_uses_first_sixteen_query_tokens() {
+fn search_uses_late_query_terms() {
     let mut engine: Index<u32> = Index::new();
-    let first_terms = (0..16)
+    let mut query_terms = (0..16)
         .map(|index| format!("aaaaaaaa{index:02}"))
         .collect::<Vec<_>>();
-    let mut query_terms = first_terms.clone();
     query_terms.push("zzzzzzzz".to_string());
 
-    engine.insert(1, &first_terms.join(" "));
-    engine.insert(2, "zzzzzzzz");
+    engine.insert(1, "zzzzzzzz");
 
     let results = ids(engine.search(&query_terms.join(" ")));
 
     assert_eq!(results[0], 1);
-    assert!(!results.contains(&2));
+}
+
+#[test]
+fn last_query_term_matches_prefixes() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "old sea");
+
+    let results = ids(engine.search("old se"));
+
+    assert_eq!(results, vec![1]);
+}
+
+#[test]
+fn prefix_search_can_be_disabled() {
+    let mut engine: Index<u32> = Index::with_options(Options::new().prefix_search(false));
+
+    engine.insert(1, "search");
+
+    let results = engine.search("sea");
+
+    assert!(results.is_empty());
+}
+
+#[test]
+fn typo_tolerance_can_be_disabled() {
+    let mut engine: Index<u32> = Index::with_options(Options::new().typo_tolerance(false));
+
+    engine.insert(1, "things");
+
+    let results = engine.search("thngs");
+
+    assert!(results.is_empty());
 }
 
 #[test]
 fn exact_query_terms_keep_their_matching_document_tokens() {
     let mut engine: Index<u32> = Index::new();
 
-    engine.insert(1, "ac ab");
-    engine.insert(2, "ab ad");
+    engine.insert(1, "alpha alpgb");
+    engine.insert(2, "alpha");
 
-    let results = engine.search("ax ac");
+    let results = engine.search("alpga alpha");
 
     assert_eq!(results[0].id, 1);
     assert!(results[0].score > results[1].score);
@@ -329,10 +370,10 @@ fn exact_query_terms_keep_their_matching_document_tokens() {
 fn assignment_can_move_strong_fuzzy_match_to_cover_more_query_terms() {
     let mut engine: Index<u32> = Index::new();
 
-    engine.insert(1, "abaa");
-    engine.insert(2, "abaa acaa");
+    engine.insert(1, "alphabet");
+    engine.insert(2, "alphabet alphabeta");
 
-    let results = engine.search("a b");
+    let results = engine.search("alphabeta alphabet");
 
     assert_eq!(results[0].id, 2);
     assert!(results[0].score > results[1].score);
@@ -342,10 +383,10 @@ fn assignment_can_move_strong_fuzzy_match_to_cover_more_query_terms() {
 fn strong_fuzzy_matches_are_assigned_before_weaker_matches() {
     let mut engine: Index<u32> = Index::new();
 
-    engine.insert(1, "ae abac");
-    engine.insert(2, "abac ae");
+    engine.insert(1, "alphx betaa");
+    engine.insert(2, "betaa alphx");
 
-    let results = engine.search("aa ab");
+    let results = engine.search("alpha beta");
 
     assert_eq!(results[0].id, 1);
     assert!(results[0].score > results[1].score);

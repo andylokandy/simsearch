@@ -17,16 +17,14 @@ can be indexed from multiple fields without custom tokenization.
 - Added `insert_many(...)` for entries with multiple searchable fields.
 - Removed `SearchOptions::threshold(...)`. Search results are no longer filtered
   by a threshold; callers can filter by `Hit::score` when needed.
-- Removed Levenshtein matching and `SearchOptions::levenshtein(...)`.
-  Jaro-Winkler is now the only token similarity metric.
+- Removed configurable matching metrics and `SearchOptions::levenshtein(...)`.
+  Typo tolerance now uses bounded edit distance internally.
 - Renamed tokenizer options:
   - `stop_words(...)` is now `separators(...)`.
   - `stop_whitespace(...)` is now `split_whitespace(...)`.
 - Added a default result limit of 10. Use `Options::limit(...)` to change it.
 - Removed the `Ord` requirement for IDs. IDs now need `Eq + Clone + Hash`;
   equal-score ties are resolved by insertion order.
-- Search is optimized for short autocomplete queries and uses the first 16
-  query tokens.
 - Bumped the crate to Rust 2024 edition and set MSRV to Rust 1.85.
 
 ### Added
@@ -34,10 +32,14 @@ can be indexed from multiple fields without custom tokenization.
 - `Hit<Id>` with `id` and normalized `score`.
 - `Index::insert_many(id, fields)` for indexing multiple searchable fields.
 - `Options::limit(...)` for controlling result count.
+- `Options::prefix_search(...)` for controlling last-token prefix matching.
+- `Options::typo_tolerance(...)` for controlling bounded typo matching.
 - Scores in the interactive `books` example.
 
 ### Changed
 
+- Search now uses a positional inverted index with exact, last-token prefix,
+  and bounded typo-tolerant term expansion.
 - Search results are ranked by a single normalized relevance score in the
   `0.0..=1.0` range.
 - Low-quality matches are allowed, but they receive lower scores and rank behind

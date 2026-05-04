@@ -28,7 +28,7 @@ fn add_books(bencher: divan::Bencher) {
 }
 
 #[divan::bench]
-fn search_jaro_winkler(bencher: divan::Bencher) {
+fn search_typo_tolerant(bencher: divan::Bencher) {
     let books = load_books();
     let mut engine = Index::new();
 

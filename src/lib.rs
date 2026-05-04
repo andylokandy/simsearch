@@ -18,10 +18,8 @@
 //! ```
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
-
-use strsim::jaro_winkler;
 
 const QUALITY_WEIGHT: f64 = 0.68;
 const COVERAGE_WEIGHT: f64 = 0.14;
@@ -29,8 +27,9 @@ const PROXIMITY_WEIGHT: f64 = 0.07;
 const EXACTNESS_WEIGHT: f64 = 0.04;
 const POSITION_WEIGHT: f64 = 0.03;
 const SPECIFICITY_WEIGHT: f64 = 0.04;
-const MAX_QUERY_TOKENS: usize = 16;
 const MAX_ASSIGNMENT_STATES: usize = 64;
+
+type PostingMap = HashMap<usize, Vec<usize>>;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -47,7 +46,9 @@ where
     ids_map: HashMap<Id, usize>,
     reverse_ids_map: HashMap<usize, Id>,
     forward_map: HashMap<usize, Vec<String>>,
-    reverse_map: HashMap<String, Vec<usize>>,
+    reverse_map: HashMap<String, PostingMap>,
+    terms: BTreeSet<String>,
+    typo_map: HashMap<String, HashSet<String>>,
 }
 
 /// A search result with its normalized relevance score.
@@ -81,13 +82,21 @@ struct TokenMatch {
     query_index: usize,
     doc_index: usize,
     score: f64,
+    typo_cost: usize,
     exact: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct TokenSimilarity {
     score: f64,
+    typo_cost: usize,
     exact: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TermCandidate {
+    term: String,
+    similarity: TokenSimilarity,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +205,8 @@ where
             reverse_ids_map: HashMap::new(),
             forward_map: HashMap::new(),
             reverse_map: HashMap::new(),
+            terms: BTreeSet::new(),
+            typo_map: HashMap::new(),
         }
     }
 
@@ -279,11 +290,17 @@ where
         self.reverse_ids_map.insert(id_num, id);
         self.id_num_counter += 1;
 
-        for token in tokens.clone() {
+        for (position, token) in tokens.iter().enumerate() {
+            if !self.reverse_map.contains_key(token) {
+                self.add_term(token);
+            }
+
             self.reverse_map
-                .entry(token)
-                .or_insert_with(|| Vec::with_capacity(1))
-                .push(id_num);
+                .entry(token.clone())
+                .or_default()
+                .entry(id_num)
+                .or_default()
+                .push(position);
         }
 
         self.forward_map.insert(id_num, tokens);
@@ -295,9 +312,8 @@ where
     /// Pattern will be tokenized according to the search option.
     /// By default whitespaces(including tabs) are considered as separators,
     /// you can change the behavior by providing `Options`.
-    ///
-    /// Search is optimized for short autocomplete queries and uses the first
-    /// 16 query tokens.
+    /// Search matches exact terms, the last query term as a prefix, and
+    /// typo-tolerant terms when those options are enabled.
     ///
     /// # Examples
     ///
@@ -325,19 +341,17 @@ where
             .collect()
     }
 
-    fn search_ranked(&self, mut pattern_tokens: Vec<String>) -> Vec<RankedResult<Id>> {
-        pattern_tokens.truncate(MAX_QUERY_TOKENS);
-
+    fn search_ranked(&self, pattern_tokens: Vec<String>) -> Vec<RankedResult<Id>> {
         if pattern_tokens.is_empty() || self.options.limit == 0 {
             return Vec::new();
         }
 
-        let candidates = self.collect_candidates(&pattern_tokens);
-        let mut results: Vec<RankedResult<Id>> = candidates
+        let matches_by_document = self.collect_matches(&pattern_tokens);
+        let mut results: Vec<RankedResult<Id>> = matches_by_document
             .into_iter()
-            .filter_map(|id_num| {
+            .filter_map(|(id_num, matches)| {
                 let tokens = self.forward_map.get(&id_num)?;
-                let rank = self.rank_document(&pattern_tokens, tokens)?;
+                let rank = self.rank_document(&pattern_tokens, tokens, matches)?;
                 let id = self
                     .reverse_ids_map
                     .get(&id_num)
@@ -354,38 +368,46 @@ where
         results
     }
 
-    fn collect_candidates(&self, pattern_tokens: &[String]) -> HashSet<usize> {
-        let mut candidates = HashSet::new();
-        for pattern_token in pattern_tokens {
-            for (token, id_nums) in &self.reverse_map {
-                if self.token_similarity(pattern_token, token).is_some() {
-                    for id_num in id_nums {
-                        candidates.insert(*id_num);
+    fn collect_matches(&self, pattern_tokens: &[String]) -> HashMap<usize, Vec<TokenMatch>> {
+        let mut matches_by_document: HashMap<usize, Vec<TokenMatch>> = HashMap::new();
+
+        for (query_index, pattern_token) in pattern_tokens.iter().enumerate() {
+            let is_last_query_token = query_index + 1 == pattern_tokens.len();
+            for candidate in self.expand_query_term(pattern_token, is_last_query_token) {
+                if let Some(postings) = self.reverse_map.get(&candidate.term) {
+                    for (id_num, positions) in postings {
+                        let matches = matches_by_document.entry(*id_num).or_default();
+                        for doc_index in positions {
+                            matches.push(TokenMatch {
+                                query_index,
+                                doc_index: *doc_index,
+                                score: candidate.similarity.score,
+                                typo_cost: candidate.similarity.typo_cost,
+                                exact: candidate.similarity.exact,
+                            });
+                        }
                     }
                 }
             }
         }
-        candidates
+
+        matches_by_document
     }
 
-    fn rank_document(&self, pattern_tokens: &[String], tokens: &[String]) -> Option<Rank> {
+    fn rank_document(
+        &self,
+        pattern_tokens: &[String],
+        tokens: &[String],
+        matches: Vec<TokenMatch>,
+    ) -> Option<Rank> {
         if tokens.is_empty() {
             return None;
         }
 
         let mut matches_by_query = vec![Vec::new(); pattern_tokens.len()];
 
-        for (query_index, pattern_token) in pattern_tokens.iter().enumerate() {
-            for (doc_index, token) in tokens.iter().enumerate() {
-                if let Some(similarity) = self.token_similarity(pattern_token, token) {
-                    matches_by_query[query_index].push(TokenMatch {
-                        query_index,
-                        doc_index,
-                        score: similarity.score,
-                        exact: similarity.exact,
-                    });
-                }
-            }
+        for token_match in matches {
+            matches_by_query[token_match.query_index].push(token_match);
         }
 
         for matches in &mut matches_by_query {
@@ -502,37 +524,257 @@ where
         rhs.score
             .partial_cmp(&lhs.score)
             .unwrap_or(Ordering::Equal)
+            .then_with(|| lhs.typo_cost.cmp(&rhs.typo_cost))
             .then_with(|| rhs.exact.cmp(&lhs.exact))
             .then_with(|| lhs.doc_index.cmp(&rhs.doc_index))
             .then_with(|| lhs.query_index.cmp(&rhs.query_index))
     }
 
-    fn token_similarity(&self, pattern_token: &str, token: &str) -> Option<TokenSimilarity> {
-        let exact = pattern_token == token;
-        let score = jaro_winkler(token, pattern_token);
+    fn expand_query_term(&self, pattern_token: &str, prefix_search: bool) -> Vec<TermCandidate> {
+        let mut candidates: HashMap<String, TokenSimilarity> = HashMap::new();
 
-        if score > 0.0 {
-            Some(TokenSimilarity { score, exact })
-        } else {
-            None
+        if self.reverse_map.contains_key(pattern_token) {
+            Self::insert_candidate(
+                &mut candidates,
+                pattern_token,
+                TokenSimilarity {
+                    score: 1.0,
+                    typo_cost: 0,
+                    exact: true,
+                },
+            );
         }
+
+        if self.options.prefix_search && prefix_search {
+            for term in self.prefix_terms(pattern_token) {
+                if term == pattern_token {
+                    continue;
+                }
+
+                Self::insert_candidate(
+                    &mut candidates,
+                    term,
+                    TokenSimilarity {
+                        score: Self::prefix_score(pattern_token, term),
+                        typo_cost: 0,
+                        exact: false,
+                    },
+                );
+            }
+        }
+
+        if self.options.typo_tolerance {
+            for term in self.typo_terms(pattern_token) {
+                if term == pattern_token {
+                    continue;
+                }
+
+                let max_typos = Self::allowed_typos(pattern_token);
+                if let Some(typo_cost) = Self::edit_distance_at_most(pattern_token, term, max_typos)
+                {
+                    Self::insert_candidate(
+                        &mut candidates,
+                        term,
+                        TokenSimilarity {
+                            score: Self::typo_score(pattern_token, term, typo_cost),
+                            typo_cost,
+                            exact: false,
+                        },
+                    );
+                }
+            }
+        }
+
+        candidates
+            .into_iter()
+            .map(|(term, similarity)| TermCandidate { term, similarity })
+            .collect()
+    }
+
+    fn insert_candidate(
+        candidates: &mut HashMap<String, TokenSimilarity>,
+        term: &str,
+        similarity: TokenSimilarity,
+    ) {
+        candidates
+            .entry(term.to_string())
+            .and_modify(|current| {
+                if Self::compare_similarity(similarity, *current).is_lt() {
+                    *current = similarity;
+                }
+            })
+            .or_insert(similarity);
+    }
+
+    fn compare_similarity(lhs: TokenSimilarity, rhs: TokenSimilarity) -> Ordering {
+        rhs.score
+            .partial_cmp(&lhs.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| lhs.typo_cost.cmp(&rhs.typo_cost))
+            .then_with(|| rhs.exact.cmp(&lhs.exact))
+    }
+
+    fn prefix_terms(&self, prefix: &str) -> Vec<&str> {
+        if prefix.is_empty() {
+            return Vec::new();
+        }
+
+        self.terms
+            .range(prefix.to_string()..)
+            .take_while(|term| term.starts_with(prefix))
+            .map(String::as_str)
+            .collect()
+    }
+
+    fn typo_terms(&self, pattern_token: &str) -> Vec<&str> {
+        let mut terms = HashSet::new();
+        for variant in Self::deletion_variants(pattern_token, Self::allowed_typos(pattern_token)) {
+            if let Some(candidates) = self.typo_map.get(&variant) {
+                for term in candidates {
+                    terms.insert(term.as_str());
+                }
+            }
+        }
+
+        terms.into_iter().collect()
+    }
+
+    fn prefix_score(prefix: &str, term: &str) -> f64 {
+        let prefix_len = prefix.chars().count();
+        let term_len = term.chars().count().max(1);
+        0.9 + 0.1 * prefix_len as f64 / term_len as f64
+    }
+
+    fn typo_score(pattern_token: &str, term: &str, typo_cost: usize) -> f64 {
+        let len = pattern_token
+            .chars()
+            .count()
+            .max(term.chars().count())
+            .max(1);
+        1.0 - typo_cost as f64 / (len + 1) as f64
+    }
+
+    fn allowed_typos(token: &str) -> usize {
+        match token.chars().count() {
+            0..=4 => 0,
+            5..=8 => 1,
+            _ => 2,
+        }
+    }
+
+    fn add_term(&mut self, term: &str) {
+        self.terms.insert(term.to_string());
+        for variant in Self::deletion_variants(term, Self::allowed_typos(term)) {
+            self.typo_map
+                .entry(variant)
+                .or_default()
+                .insert(term.to_string());
+        }
+    }
+
+    fn remove_term(&mut self, term: &str) {
+        self.terms.remove(term);
+        for variant in Self::deletion_variants(term, Self::allowed_typos(term)) {
+            if let Some(terms) = self.typo_map.get_mut(&variant) {
+                terms.remove(term);
+                if terms.is_empty() {
+                    self.typo_map.remove(&variant);
+                }
+            }
+        }
+    }
+
+    fn deletion_variants(token: &str, max_deletions: usize) -> HashSet<String> {
+        let mut variants = HashSet::from([token.to_string()]);
+        let mut current = HashSet::from([token.to_string()]);
+
+        for _ in 0..max_deletions {
+            let mut next = HashSet::new();
+            for variant in &current {
+                let chars: Vec<char> = variant.chars().collect();
+                for index in 0..chars.len() {
+                    let mut deleted = String::with_capacity(variant.len());
+                    for (char_index, character) in chars.iter().enumerate() {
+                        if char_index != index {
+                            deleted.push(*character);
+                        }
+                    }
+                    if variants.insert(deleted.clone()) {
+                        next.insert(deleted);
+                    }
+                }
+            }
+            current = next;
+        }
+
+        variants
+    }
+
+    fn edit_distance_at_most(lhs: &str, rhs: &str, max_distance: usize) -> Option<usize> {
+        let lhs: Vec<char> = lhs.chars().collect();
+        let rhs: Vec<char> = rhs.chars().collect();
+
+        if lhs.len().abs_diff(rhs.len()) > max_distance {
+            return None;
+        }
+
+        let mut distances = vec![vec![0; rhs.len() + 1]; lhs.len() + 1];
+        for (lhs_index, row) in distances.iter_mut().enumerate() {
+            row[0] = lhs_index;
+        }
+        for (rhs_index, distance) in distances[0].iter_mut().enumerate() {
+            *distance = rhs_index;
+        }
+
+        for (lhs_index, lhs_char) in lhs.iter().enumerate() {
+            let row = lhs_index + 1;
+            let mut row_min = distances[row][0];
+
+            for (rhs_index, rhs_char) in rhs.iter().enumerate() {
+                let column = rhs_index + 1;
+                let substitution_cost = usize::from(lhs_char != rhs_char);
+                distances[row][column] = (distances[row - 1][column] + 1)
+                    .min(distances[row][column - 1] + 1)
+                    .min(distances[row - 1][column - 1] + substitution_cost);
+
+                if row > 1
+                    && column > 1
+                    && lhs[row - 1] == rhs[column - 2]
+                    && lhs[row - 2] == rhs[column - 1]
+                {
+                    distances[row][column] =
+                        distances[row][column].min(distances[row - 2][column - 2] + 1);
+                }
+
+                row_min = row_min.min(distances[row][column]);
+            }
+
+            if row_min > max_distance {
+                return None;
+            }
+        }
+
+        let distance = distances[lhs.len()][rhs.len()];
+        (distance <= max_distance).then_some(distance)
     }
 
     /// Remove an entry by id.
     pub fn remove(&mut self, id: &Id) {
-        if let Some(id_num) = self.ids_map.get(id) {
-            for token in &self.forward_map[id_num] {
-                if let Some(vec) = self.reverse_map.get_mut(token) {
-                    vec.retain(|i| i != id_num);
-                    if vec.is_empty() {
-                        // prune empty token entry to keep the index small
-                        self.reverse_map.remove(token);
+        if let Some(id_num) = self.ids_map.get(id).copied() {
+            if let Some(tokens) = self.forward_map.remove(&id_num) {
+                let unique_tokens = tokens.into_iter().collect::<HashSet<_>>();
+                for token in unique_tokens {
+                    if let Some(postings) = self.reverse_map.get_mut(&token) {
+                        postings.remove(&id_num);
+                        if postings.is_empty() {
+                            self.reverse_map.remove(&token);
+                            self.remove_term(&token);
+                        }
                     }
                 }
             }
-            self.forward_map.remove(id_num);
-            self.reverse_ids_map.remove(id_num);
             self.ids_map.remove(id);
+            self.reverse_ids_map.remove(&id_num);
         };
     }
 
@@ -543,6 +785,8 @@ where
         self.reverse_ids_map.clear();
         self.forward_map.clear();
         self.reverse_map.clear();
+        self.terms.clear();
+        self.typo_map.clear();
     }
 
     fn tokenize(&self, tokens: &[&str]) -> Vec<String> {
@@ -606,6 +850,8 @@ pub struct Options {
     split_whitespace: bool,
     separators: Vec<String>,
     limit: usize,
+    prefix_search: bool,
+    typo_tolerance: bool,
 }
 
 impl Options {
@@ -616,6 +862,8 @@ impl Options {
             split_whitespace: true,
             separators: vec![],
             limit: 10,
+            prefix_search: true,
+            typo_tolerance: true,
         }
     }
 
@@ -671,6 +919,26 @@ impl Options {
     /// Defaults to `10`.
     pub fn limit(self, limit: usize) -> Self {
         Options { limit, ..self }
+    }
+
+    /// Sets whether the last query token can match indexed token prefixes.
+    ///
+    /// Defaults to `true`.
+    pub fn prefix_search(self, prefix_search: bool) -> Self {
+        Options {
+            prefix_search,
+            ..self
+        }
+    }
+
+    /// Sets whether search tolerates typos using bounded edit distance.
+    ///
+    /// Defaults to `true`.
+    pub fn typo_tolerance(self, typo_tolerance: bool) -> Self {
+        Options {
+            typo_tolerance,
+            ..self
+        }
     }
 }
 
