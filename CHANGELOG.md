@@ -18,7 +18,7 @@ can be indexed from multiple parts without custom tokenization.
 - Removed `SearchOptions::threshold(...)`. Search results are no longer filtered
   by a threshold; callers can filter by `Hit::score` when needed.
 - Removed configurable matching metrics and `SearchOptions::levenshtein(...)`.
-  Typo tolerance now uses bounded edit distance internally.
+  Typo tolerance now uses Jaro-Winkler similarity internally.
 - Renamed tokenizer options:
   - `stop_words(...)` is now `separators(...)`.
   - `stop_whitespace(...)` is now `split_whitespace(...)`.
@@ -39,7 +39,7 @@ can be indexed from multiple parts without custom tokenization.
 ### Changed
 
 - Search now uses a positional inverted index with exact, last-token prefix,
-  typo-tolerant prefix, and bounded typo-tolerant term expansion.
+  typo-tolerant prefix, and Jaro-Winkler typo-tolerant term expansion.
 - Search results are ranked by a single normalized relevance score in the
   `0.0..=1.0` range.
 - Low-quality matches are allowed, but they receive lower scores and rank behind

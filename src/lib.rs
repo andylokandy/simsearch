@@ -21,6 +21,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 
+use strsim::jaro_winkler;
+
 const QUALITY_WEIGHT: f64 = 0.68;
 const COVERAGE_WEIGHT: f64 = 0.14;
 const PROXIMITY_WEIGHT: f64 = 0.07;
@@ -48,7 +50,6 @@ where
     forward_map: HashMap<usize, Vec<String>>,
     reverse_map: HashMap<String, PostingMap>,
     terms: BTreeSet<String>,
-    typo_map: HashMap<String, HashSet<String>>,
 }
 
 /// A search result with its normalized relevance score.
@@ -82,14 +83,12 @@ struct TokenMatch {
     query_index: usize,
     doc_index: usize,
     score: f64,
-    typo_cost: usize,
     exact: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct TokenSimilarity {
     score: f64,
-    typo_cost: usize,
     exact: bool,
 }
 
@@ -206,7 +205,6 @@ where
             forward_map: HashMap::new(),
             reverse_map: HashMap::new(),
             terms: BTreeSet::new(),
-            typo_map: HashMap::new(),
         }
     }
 
@@ -383,7 +381,6 @@ where
                                 query_index,
                                 doc_index: *doc_index,
                                 score: candidate.similarity.score,
-                                typo_cost: candidate.similarity.typo_cost,
                                 exact: candidate.similarity.exact,
                             });
                         }
@@ -525,7 +522,6 @@ where
         rhs.score
             .partial_cmp(&lhs.score)
             .unwrap_or(Ordering::Equal)
-            .then_with(|| lhs.typo_cost.cmp(&rhs.typo_cost))
             .then_with(|| rhs.exact.cmp(&lhs.exact))
             .then_with(|| lhs.doc_index.cmp(&rhs.doc_index))
             .then_with(|| lhs.query_index.cmp(&rhs.query_index))
@@ -540,7 +536,6 @@ where
                 pattern_token,
                 TokenSimilarity {
                     score: 1.0,
-                    typo_cost: 0,
                     exact: true,
                 },
             );
@@ -557,7 +552,6 @@ where
                     term,
                     TokenSimilarity {
                         score: Self::prefix_score(pattern_token, term),
-                        typo_cost: 0,
                         exact: false,
                     },
                 );
@@ -565,27 +559,26 @@ where
         }
 
         if self.options.typo_tolerance {
-            for term in self.typo_terms(pattern_token) {
+            for term in &self.terms {
+                let term = term.as_str();
                 if term == pattern_token {
                     continue;
                 }
 
-                let max_typos = Self::allowed_typos(pattern_token);
-                if let Some(typo_cost) = Self::edit_distance_at_most(pattern_token, term, max_typos)
-                {
+                let score = Self::typo_score(
+                    pattern_token,
+                    term,
+                    self.options.prefix_search && prefix_search,
+                );
+                if score >= Self::min_typo_score(pattern_token) {
                     Self::insert_candidate(
                         &mut candidates,
                         term,
                         TokenSimilarity {
-                            score: Self::typo_score(pattern_token, term, typo_cost),
-                            typo_cost,
+                            score,
                             exact: false,
                         },
                     );
-                } else if self.options.prefix_search && prefix_search {
-                    if let Some(similarity) = Self::prefix_typo_similarity(pattern_token, term) {
-                        Self::insert_candidate(&mut candidates, term, similarity);
-                    }
                 }
             }
         }
@@ -615,7 +608,6 @@ where
         rhs.score
             .partial_cmp(&lhs.score)
             .unwrap_or(Ordering::Equal)
-            .then_with(|| lhs.typo_cost.cmp(&rhs.typo_cost))
             .then_with(|| rhs.exact.cmp(&lhs.exact))
     }
 
@@ -631,151 +623,55 @@ where
             .collect()
     }
 
-    fn typo_terms(&self, pattern_token: &str) -> Vec<&str> {
-        let mut terms = HashSet::new();
-        for variant in Self::deletion_variants(pattern_token, Self::allowed_typos(pattern_token)) {
-            if let Some(candidates) = self.typo_map.get(&variant) {
-                for term in candidates {
-                    terms.insert(term.as_str());
-                }
-            }
-        }
-
-        terms.into_iter().collect()
-    }
-
     fn prefix_score(prefix: &str, term: &str) -> f64 {
         let prefix_len = prefix.chars().count();
         let term_len = term.chars().count().max(1);
         0.9 + 0.1 * prefix_len as f64 / term_len as f64
     }
 
-    fn typo_score(pattern_token: &str, term: &str, typo_cost: usize) -> f64 {
-        let len = pattern_token
-            .chars()
-            .count()
-            .max(term.chars().count())
-            .max(1);
-        1.0 - typo_cost as f64 / (len + 1) as f64
+    fn typo_score(pattern_token: &str, term: &str, prefix_search: bool) -> f64 {
+        let mut score = jaro_winkler(pattern_token, term);
+
+        if prefix_search {
+            score = score.max(Self::prefix_typo_score(pattern_token, term));
+        }
+
+        score
     }
 
-    fn prefix_typo_similarity(pattern_token: &str, term: &str) -> Option<TokenSimilarity> {
-        let max_typos = Self::allowed_typos(pattern_token);
-        let prefix_len = pattern_token.chars().count() + max_typos;
-        let term_prefix: String = term.chars().take(prefix_len).collect();
-        let typo_cost = Self::edit_distance_at_most(pattern_token, &term_prefix, max_typos)?;
-        let score = Self::typo_score(pattern_token, &term_prefix, typo_cost)
-            .min(Self::prefix_score(pattern_token, term));
+    fn prefix_typo_score(pattern_token: &str, term: &str) -> f64 {
+        let pattern_len = pattern_token.chars().count();
+        if pattern_len == 0 {
+            return 0.0;
+        }
 
-        Some(TokenSimilarity {
-            score,
-            typo_cost,
-            exact: false,
-        })
+        let term_len = term.chars().count();
+        let min_len = pattern_len.saturating_sub(1).max(1);
+        let max_len = (pattern_len + 2).min(term_len);
+        let mut score: f64 = 0.0;
+
+        for len in min_len..=max_len {
+            let prefix: String = term.chars().take(len).collect();
+            score = score.max(jaro_winkler(pattern_token, &prefix));
+        }
+
+        score.min(Self::prefix_score(pattern_token, term))
     }
 
-    fn allowed_typos(token: &str) -> usize {
-        match token.chars().count() {
-            0..=2 => 0,
-            3..=5 => 1,
-            _ => 2,
+    fn min_typo_score(pattern_token: &str) -> f64 {
+        match pattern_token.chars().count() {
+            0..=3 => 0.6,
+            4..=5 => 0.7,
+            _ => 0.75,
         }
     }
 
     fn add_term(&mut self, term: &str) {
         self.terms.insert(term.to_string());
-        for variant in Self::deletion_variants(term, Self::allowed_typos(term)) {
-            self.typo_map
-                .entry(variant)
-                .or_default()
-                .insert(term.to_string());
-        }
     }
 
     fn remove_term(&mut self, term: &str) {
         self.terms.remove(term);
-        for variant in Self::deletion_variants(term, Self::allowed_typos(term)) {
-            if let Some(terms) = self.typo_map.get_mut(&variant) {
-                terms.remove(term);
-                if terms.is_empty() {
-                    self.typo_map.remove(&variant);
-                }
-            }
-        }
-    }
-
-    fn deletion_variants(token: &str, max_deletions: usize) -> HashSet<String> {
-        let mut variants = HashSet::from([token.to_string()]);
-        let mut current = HashSet::from([token.to_string()]);
-
-        for _ in 0..max_deletions {
-            let mut next = HashSet::new();
-            for variant in &current {
-                let chars: Vec<char> = variant.chars().collect();
-                for index in 0..chars.len() {
-                    let mut deleted = String::with_capacity(variant.len());
-                    for (char_index, character) in chars.iter().enumerate() {
-                        if char_index != index {
-                            deleted.push(*character);
-                        }
-                    }
-                    if variants.insert(deleted.clone()) {
-                        next.insert(deleted);
-                    }
-                }
-            }
-            current = next;
-        }
-
-        variants
-    }
-
-    fn edit_distance_at_most(lhs: &str, rhs: &str, max_distance: usize) -> Option<usize> {
-        let lhs: Vec<char> = lhs.chars().collect();
-        let rhs: Vec<char> = rhs.chars().collect();
-
-        if lhs.len().abs_diff(rhs.len()) > max_distance {
-            return None;
-        }
-
-        let mut distances = vec![vec![0; rhs.len() + 1]; lhs.len() + 1];
-        for (lhs_index, row) in distances.iter_mut().enumerate() {
-            row[0] = lhs_index;
-        }
-        for (rhs_index, distance) in distances[0].iter_mut().enumerate() {
-            *distance = rhs_index;
-        }
-
-        for (lhs_index, lhs_char) in lhs.iter().enumerate() {
-            let row = lhs_index + 1;
-            let mut row_min = distances[row][0];
-
-            for (rhs_index, rhs_char) in rhs.iter().enumerate() {
-                let column = rhs_index + 1;
-                let substitution_cost = usize::from(lhs_char != rhs_char);
-                distances[row][column] = (distances[row - 1][column] + 1)
-                    .min(distances[row][column - 1] + 1)
-                    .min(distances[row - 1][column - 1] + substitution_cost);
-
-                if row > 1
-                    && column > 1
-                    && lhs[row - 1] == rhs[column - 2]
-                    && lhs[row - 2] == rhs[column - 1]
-                {
-                    distances[row][column] =
-                        distances[row][column].min(distances[row - 2][column - 2] + 1);
-                }
-
-                row_min = row_min.min(distances[row][column]);
-            }
-
-            if row_min > max_distance {
-                return None;
-            }
-        }
-
-        let distance = distances[lhs.len()][rhs.len()];
-        (distance <= max_distance).then_some(distance)
     }
 
     /// Removes an entry by ID.
@@ -806,7 +702,6 @@ where
         self.forward_map.clear();
         self.reverse_map.clear();
         self.terms.clear();
-        self.typo_map.clear();
     }
 
     fn tokenize(&self, tokens: &[&str]) -> Vec<String> {
@@ -904,7 +799,7 @@ impl Options {
         }
     }
 
-    /// Sets whether search tolerates typos using bounded edit distance.
+    /// Sets whether search tolerates typos using Jaro-Winkler similarity.
     ///
     /// Defaults to `true`.
     pub fn typo_tolerance(self, typo_tolerance: bool) -> Self {

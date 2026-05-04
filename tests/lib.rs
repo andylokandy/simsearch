@@ -173,7 +173,7 @@ fn updating_existing_content_prunes_prefix_and_typo_terms() {
     engine.insert(1, "things");
     engine.insert(1, "other");
 
-    assert!(engine.search("thi").is_empty());
+    assert!(engine.search("things").is_empty());
     assert!(engine.search("thngs").is_empty());
 }
 
@@ -343,8 +343,30 @@ fn last_query_term_matches_typo_prefixes() {
 }
 
 #[test]
-fn typo_prefixes_use_prefix_search_option() {
-    let mut engine: Index<u32> = Index::with_options(Options::new().prefix_search(false));
+fn short_transposed_typos_can_match() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "old sea");
+
+    let results = ids(engine.search("odl"));
+
+    assert_eq!(results, vec![1]);
+}
+
+#[test]
+fn long_words_tolerate_multiple_typos() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "internationalization");
+
+    let results = ids(engine.search("internatoinaliztion"));
+
+    assert_eq!(results, vec![1]);
+}
+
+#[test]
+fn typo_prefixes_use_typo_tolerance_option() {
+    let mut engine: Index<u32> = Index::with_options(Options::new().typo_tolerance(false));
 
     engine.insert(1, "things fall apart");
 
@@ -355,7 +377,8 @@ fn typo_prefixes_use_prefix_search_option() {
 
 #[test]
 fn prefix_search_can_be_disabled() {
-    let mut engine: Index<u32> = Index::with_options(Options::new().prefix_search(false));
+    let mut engine: Index<u32> =
+        Index::with_options(Options::new().prefix_search(false).typo_tolerance(false));
 
     engine.insert(1, "search");
 
