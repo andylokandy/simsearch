@@ -194,6 +194,60 @@ fn limit_caps_results() {
 }
 
 #[test]
+fn exact_full_match_ranks_before_longer_match() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "apple banana");
+    engine.insert(2, "apple");
+
+    let results = engine.search("apple");
+
+    assert_eq!(results[0].id, 2);
+    assert!(results[0].score > results[1].score);
+}
+
+#[test]
+fn exact_full_match_survives_default_limit() {
+    let mut engine: Index<u32> = Index::new();
+
+    for id in 0..10 {
+        engine.insert(id, "apple banana");
+    }
+    engine.insert(10, "apple");
+
+    let results = ids(engine.search("apple"));
+
+    assert_eq!(results[0], 10);
+    assert!(results.contains(&10));
+}
+
+#[test]
+fn exact_query_terms_keep_their_matching_document_tokens() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "ac ab");
+    engine.insert(2, "ab ad");
+
+    let results = engine.search("ax ac");
+
+    assert_eq!(results[0].id, 1);
+    assert!(results[0].score > results[1].score);
+}
+
+#[test]
+fn strong_fuzzy_matches_are_assigned_before_weaker_matches() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "ae abac");
+    engine.insert(2, "abac ae");
+
+    let results = engine.search("aa ab");
+
+    assert_eq!(results[0].id, 1);
+    assert!(results[0].score > results[1].score);
+}
+
+#[test]
 fn exact_tokens_rank_before_typos() {
     let mut engine: Index<u32> = Index::new();
 
