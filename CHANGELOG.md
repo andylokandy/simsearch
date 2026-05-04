@@ -4,7 +4,7 @@
 
 This release redesigns `simsearch` for embedded autocomplete and search
 suggestions. The public API is smaller, searches return scored hits, and entries
-can be indexed from multiple fields without custom tokenization.
+can be indexed from multiple parts without custom tokenization.
 
 ### Breaking Changes
 
@@ -14,7 +14,7 @@ can be indexed from multiple fields without custom tokenization.
 - Changed `Index::search(...)` to return `Vec<Hit<Id>>` instead of `Vec<Id>`.
 - Removed `insert_tokens(...)`, `search_tokens(...)`,
   `search_with_scores(...)`, and `search_tokens_with_scores(...)`.
-- Added `insert_many(...)` for entries with multiple searchable fields.
+- Added `insert_parts(...)` for entries with multiple searchable parts.
 - Removed `SearchOptions::threshold(...)`. Search results are no longer filtered
   by a threshold; callers can filter by `Hit::score` when needed.
 - Removed configurable matching metrics and `SearchOptions::levenshtein(...)`.
@@ -30,7 +30,7 @@ can be indexed from multiple fields without custom tokenization.
 ### Added
 
 - `Hit<Id>` with `id` and normalized `score`.
-- `Index::insert_many(id, fields)` for indexing multiple searchable fields.
+- `Index::insert_parts(id, parts)` for indexing multiple searchable parts.
 - `Options::limit(...)` for controlling result count.
 - `Options::prefix_search(...)` for controlling last-token prefix matching.
 - `Options::typo_tolerance(...)` for controlling bounded typo matching.
@@ -44,7 +44,7 @@ can be indexed from multiple fields without custom tokenization.
   `0.0..=1.0` range.
 - Low-quality matches are allowed, but they receive lower scores and rank behind
   stronger matches.
-- `insert(...)`, `insert_many(...)`, and `search(...)` all use the built-in
+- `insert(...)`, `insert_parts(...)`, and `search(...)` all use the built-in
   tokenizer.
 
 ### Migration Guide
@@ -101,10 +101,10 @@ let ids: Vec<u32> = index
 The old scored search APIs are also replaced by `search(...)`; every returned
 hit includes both `id` and `score`.
 
-#### Replace token APIs with fields
+#### Replace token APIs with parts
 
 The old token APIs were often used to avoid manually concatenating several
-document fields. Use `insert_many(...)` for that case.
+document parts. Use `insert_parts(...)` for that case.
 
 Before:
 
@@ -116,12 +116,12 @@ let results = index.search_tokens(&["hemingway"]);
 After:
 
 ```rust
-index.insert_many(1, ["The Old Man and the Sea", "Ernest Hemingway"]);
+index.insert_parts(1, ["The Old Man and the Sea", "Ernest Hemingway"]);
 let results = index.search("hemingway");
 ```
 
 There is no direct replacement for fully custom query tokenization. The index
-now intentionally uses one built-in tokenizer for both indexed fields and search
+now intentionally uses one built-in tokenizer for both indexed parts and search
 queries.
 
 #### Replace threshold filtering

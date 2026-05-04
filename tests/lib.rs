@@ -142,11 +142,11 @@ fn query_terms_need_distinct_document_tokens() {
 }
 
 #[test]
-fn insert_many_searches_multiple_fields() {
+fn insert_parts_searches_multiple_parts() {
     let mut engine: Index<u32> = Index::new();
 
-    engine.insert_many(1, ["old sea", "hemingway"]);
-    engine.insert_many(2, ["old sea", "steinbeck"]);
+    engine.insert_parts(1, ["old sea", "hemingway"]);
+    engine.insert_parts(2, ["old sea", "steinbeck"]);
 
     let results = engine.search("hemingway");
 
@@ -154,12 +154,12 @@ fn insert_many_searches_multiple_fields() {
 }
 
 #[test]
-fn insert_many_updates_existing_content() {
+fn insert_parts_updates_existing_content() {
     let mut engine: Index<u32> = Index::new();
 
-    engine.insert_many(1, ["old sea", "hemingway"]);
-    engine.insert_many(2, ["hemingway"]);
-    engine.insert_many(1, ["east of eden", "steinbeck"]);
+    engine.insert_parts(1, ["old sea", "hemingway"]);
+    engine.insert_parts(2, ["hemingway"]);
+    engine.insert_parts(1, ["east of eden", "steinbeck"]);
 
     let results = engine.search("hemingway");
 
@@ -178,11 +178,11 @@ fn updating_existing_content_prunes_prefix_and_typo_terms() {
 }
 
 #[test]
-fn insert_many_uses_builtin_tokenizer() {
+fn insert_parts_uses_builtin_tokenizer() {
     let mut engine: Index<u32> =
         Index::with_options(Options::new().separators(vec!["/".to_string()]));
 
-    engine.insert_many(1, ["old/man"]);
+    engine.insert_parts(1, ["old/man"]);
 
     let split_results = engine.search("old man");
     let token_results = engine.search("old/man");

@@ -240,11 +240,11 @@ where
         self.insert_normalized_tokens(id, tokens)
     }
 
-    /// Inserts an entry with multiple searchable fields into the index.
+    /// Inserts an entry with multiple searchable parts into the index.
     ///
-    /// Each field is tokenized with the same built-in tokenizer used by
+    /// Each part is tokenized with the same built-in tokenizer used by
     /// [`Index::insert`]. This is useful when an item has several searchable
-    /// fields, such as a title, author, tags, or aliases.
+    /// parts, such as a title, author, tags, or aliases.
     ///
     /// Insert with an existing id updates the content.
     ///
@@ -258,7 +258,7 @@ where
     ///
     /// let mut engine: Index<&str> = Index::new();
     ///
-    /// engine.insert_many("A Game of Thrones", [
+    /// engine.insert_parts("A Game of Thrones", [
     ///     "A Game of Thrones",
     ///     "George R. R. Martin",
     ///     "fantasy",
@@ -268,17 +268,17 @@ where
     ///
     /// assert_eq!(results[0].id, "A Game of Thrones");
     /// ```
-    pub fn insert_many<I, S>(&mut self, id: Id, fields: I)
+    pub fn insert_parts<I, S>(&mut self, id: Id, parts: I)
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let fields: Vec<String> = fields
+        let parts: Vec<String> = parts
             .into_iter()
-            .map(|field| field.as_ref().to_string())
+            .map(|part| part.as_ref().to_string())
             .collect();
-        let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
-        let tokens = self.tokenize(&fields);
+        let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+        let tokens = self.tokenize(&parts);
         self.insert_normalized_tokens(id, tokens)
     }
 
@@ -919,7 +919,7 @@ impl Options {
 
     /// Sets custom token separators.
     ///
-    /// This option enables the tokenizer to split indexed fields and search
+    /// This option enables the tokenizer to split indexed parts and search
     /// queries by the extra list of custom separators.
     ///
     /// Defaults to `&[]`.
