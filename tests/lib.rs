@@ -53,6 +53,18 @@ fn remove_prunes_reverse_map_entries() {
 }
 
 #[test]
+fn duplicate_tokens_are_indexed_once_per_entry() {
+    let mut engine: Index<String> = Index::new();
+    let id = "id1".to_string();
+
+    engine.insert(id.clone(), "apple apple");
+    engine.remove(&id);
+
+    let results = engine.search("apple");
+    assert!(results.is_empty());
+}
+
+#[test]
 fn search_returns_normalized_scores() {
     let mut engine: Index<u32> = Index::new();
 

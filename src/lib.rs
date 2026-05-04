@@ -272,11 +272,14 @@ where
         self.reverse_ids_map.insert(id_num, id);
         self.id_num_counter += 1;
 
+        let mut indexed_tokens = HashSet::new();
         for token in tokens.clone() {
-            self.reverse_map
-                .entry(token)
-                .or_insert_with(|| Vec::with_capacity(1))
-                .push(id_num);
+            if indexed_tokens.insert(token.clone()) {
+                self.reverse_map
+                    .entry(token)
+                    .or_insert_with(|| Vec::with_capacity(1))
+                    .push(id_num);
+            }
         }
 
         self.forward_map.insert(id_num, tokens);
