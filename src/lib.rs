@@ -212,14 +212,14 @@ where
 
     /// Inserts an entry into the index.
     ///
-    /// Input will be tokenized according to the search option.
-    /// By default whitespaces(including tabs) are considered as separators,
-    /// you can change the behavior by providing `Options`.
+    /// The content is tokenized according to the index options.
+    /// By default, whitespace, including tabs, is treated as a separator.
+    /// Use [`Options`] to change tokenization behavior.
     ///
-    /// Insert with an existing id updates the content.
+    /// Inserting an existing ID updates its content.
     ///
-    /// **Note that** id is not searchable. Add id to the contents if you would
-    /// like to perform search on it.
+    /// The ID itself is not searchable. Include it in the content if you want
+    /// searches to match it.
     ///
     /// # Examples
     ///
@@ -246,10 +246,10 @@ where
     /// [`Index::insert`]. This is useful when an item has several searchable
     /// parts, such as a title, author, tags, or aliases.
     ///
-    /// Insert with an existing id updates the content.
+    /// Inserting an existing ID updates its content.
     ///
-    /// **Note that** id is not searchable. Add id to the contents if you would
-    /// like to perform search on it.
+    /// The ID itself is not searchable. Include it in the content if you want
+    /// searches to match it.
     ///
     /// # Examples
     ///
@@ -309,9 +309,9 @@ where
     /// Searches pattern and returns up to [`Options::limit`] hits sorted by
     /// relevance.
     ///
-    /// Pattern will be tokenized according to the search option.
-    /// By default whitespaces(including tabs) are considered as separators,
-    /// you can change the behavior by providing `Options`.
+    /// The query is tokenized according to the index options.
+    /// By default, whitespace, including tabs, is treated as a separator.
+    /// Use [`Options`] to change tokenization behavior.
     /// Search matches exact terms, the last query term as a prefix, and
     /// typo-tolerant terms when those options are enabled.
     ///
@@ -758,7 +758,7 @@ where
         (distance <= max_distance).then_some(distance)
     }
 
-    /// Remove an entry by id.
+    /// Removes an entry by ID.
     pub fn remove(&mut self, id: &Id) {
         if let Some(id_num) = self.ids_map.get(id).copied() {
             if let Some(tokens) = self.forward_map.remove(&id_num) {
@@ -778,7 +778,7 @@ where
         };
     }
 
-    /// Clear all entries.
+    /// Clears all entries.
     pub fn clear(&mut self) {
         self.id_num_counter = 0;
         self.ids_map.clear();
@@ -920,9 +920,9 @@ impl Options {
     /// Sets custom token separators.
     ///
     /// This option enables the tokenizer to split indexed parts and search
-    /// queries by the extra list of custom separators.
+    /// queries by the configured custom separators.
     ///
-    /// Defaults to `&[]`.
+    /// Defaults to an empty list.
     ///
     /// # Examples
     /// ```

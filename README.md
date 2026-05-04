@@ -36,19 +36,19 @@ assert_eq!(results[0].id, 1);
 assert!(results[0].score > 0.0);
 ```
 
-Also try the interactive demo by:
+You can also try the interactive demo:
 
+```sh
+cargo run --release --example books
 ```
-$ cargo run --release --example books
-```
 
-## Contribution
+## Contributing
 
-All kinds of contribution are welcomed.
+Contributions are welcome.
 
-- **Issues.** Feel free to open an issue when you find typos, bugs, or have any question.
-- **Pull requests**. New collection, better implementation, more tests, more documents and typo fixes are all welcomed.
+- **Issues.** Open an issue if you find a typo, hit a bug, or have a question.
+- **Pull requests.** New collections, implementation improvements, tests, documentation, and typo fixes are welcome.
 
 ## License
 
-Licensed under MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+Licensed under the MIT license ([LICENSE](LICENSE) or http://opensource.org/licenses/MIT).
