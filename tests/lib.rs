@@ -116,6 +116,26 @@ fn near_tokens_rank_before_far_tokens() {
 }
 
 #[test]
+fn adjacent_phrase_with_many_repeated_tokens_ranks_before_far_match() {
+    let mut engine: Index<u32> = Index::new();
+    let mut phrase_doc = vec!["a"; 100];
+    phrase_doc.extend(["a", "b"]);
+    phrase_doc.extend(vec!["b"; 101]);
+
+    let mut far_doc = vec!["a"];
+    far_doc.extend(vec!["x"; 20]);
+    far_doc.push("b");
+
+    engine.insert(1, &phrase_doc.join(" "));
+    engine.insert(2, &far_doc.join(" "));
+
+    let results = engine.search("a b");
+
+    assert_eq!(results[0].id, 1);
+    assert!(results[0].score > results[1].score);
+}
+
+#[test]
 fn equal_ranks_keep_insertion_order_without_ord_ids() {
     let mut engine: Index<StableId> = Index::new();
     let first = StableId("first");

@@ -29,7 +29,6 @@ const PROXIMITY_WEIGHT: f64 = 0.07;
 const EXACTNESS_WEIGHT: f64 = 0.04;
 const POSITION_WEIGHT: f64 = 0.03;
 const SPECIFICITY_WEIGHT: f64 = 0.04;
-const ASSIGNMENT_BEAM_WIDTH: usize = 64;
 
 type PostingMap = HashMap<usize, Vec<usize>>;
 
@@ -101,8 +100,57 @@ struct TermCandidate {
 #[derive(Debug, Clone)]
 struct AssignmentState {
     selected: Vec<TokenMatch>,
-    used_tokens: Vec<bool>,
-    rank: Rank,
+    metrics: AssignmentMetrics,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AssignmentMetrics {
+    matched_terms: usize,
+    score_sum: f64,
+    exact_terms: usize,
+    proximity_cost: usize,
+    first_position: usize,
+    last_position: Option<usize>,
+}
+
+impl AssignmentState {
+    fn new() -> Self {
+        AssignmentState {
+            selected: Vec::new(),
+            metrics: AssignmentMetrics {
+                matched_terms: 0,
+                score_sum: 0.0,
+                exact_terms: 0,
+                proximity_cost: 0,
+                first_position: usize::MAX,
+                last_position: None,
+            },
+        }
+    }
+
+    fn with_match(&self, token_match: TokenMatch) -> Self {
+        let mut selected = self.selected.clone();
+        selected.push(token_match.clone());
+
+        let proximity_cost = self.metrics.proximity_cost
+            + self
+                .metrics
+                .last_position
+                .map(|last_position| token_match.doc_index - last_position - 1)
+                .unwrap_or(0);
+
+        AssignmentState {
+            selected,
+            metrics: AssignmentMetrics {
+                matched_terms: self.metrics.matched_terms + 1,
+                score_sum: self.metrics.score_sum + token_match.score,
+                exact_terms: self.metrics.exact_terms + usize::from(token_match.exact),
+                proximity_cost,
+                first_position: self.metrics.first_position.min(token_match.doc_index),
+                last_position: Some(token_match.doc_index),
+            },
+        }
+    }
 }
 
 impl Rank {
@@ -414,7 +462,7 @@ where
             matches.sort_by(Self::compare_token_matches);
         }
 
-        let mut selected = Self::select_best_matches(&matches_by_query, tokens.len());
+        let mut selected = Self::select_best_matches(&matches_by_query);
         if selected.is_empty() {
             return None;
         }
@@ -428,59 +476,30 @@ where
         ))
     }
 
-    fn select_best_matches(
-        matches_by_query: &[Vec<TokenMatch>],
-        doc_len: usize,
-    ) -> Vec<TokenMatch> {
-        let query_len = matches_by_query.len();
-        let mut query_order: Vec<usize> = (0..query_len).collect();
-        query_order.sort_by(|lhs, rhs| {
-            matches_by_query[*lhs]
-                .len()
-                .cmp(&matches_by_query[*rhs].len())
-                .then_with(|| lhs.cmp(rhs))
-        });
+    fn select_best_matches(matches_by_query: &[Vec<TokenMatch>]) -> Vec<TokenMatch> {
+        let mut states = vec![AssignmentState::new()];
 
-        let mut states = vec![AssignmentState {
-            selected: Vec::new(),
-            used_tokens: vec![false; doc_len],
-            rank: Rank { score: 0.0 },
-        }];
-
-        for query_index in query_order {
-            let matches = &matches_by_query[query_index];
+        for matches in matches_by_query {
             if matches.is_empty() {
                 continue;
             }
 
-            let mut next_states = Vec::new();
+            let mut next_states = states.clone();
             for state in &states {
-                next_states.push(state.clone());
-
                 for token_match in matches {
-                    if state.used_tokens[token_match.doc_index] {
+                    if state
+                        .metrics
+                        .last_position
+                        .is_some_and(|last_position| token_match.doc_index <= last_position)
+                    {
                         continue;
                     }
 
-                    let mut selected = state.selected.clone();
-                    selected.push(token_match.clone());
-                    selected.sort_by_key(|selected_match| selected_match.query_index);
-
-                    let mut used_tokens = state.used_tokens.clone();
-                    used_tokens[token_match.doc_index] = true;
-                    let rank = Rank::from_matches(&selected, query_len, doc_len);
-
-                    next_states.push(AssignmentState {
-                        selected,
-                        used_tokens,
-                        rank,
-                    });
+                    next_states.push(state.with_match(token_match.clone()));
                 }
             }
 
-            next_states.sort_by(Self::compare_assignment_states);
-            next_states.truncate(ASSIGNMENT_BEAM_WIDTH);
-            states = next_states;
+            states = Self::prune_assignment_states(next_states);
         }
 
         states.sort_by(Self::compare_assignment_states);
@@ -491,25 +510,62 @@ where
             .unwrap_or_default()
     }
 
+    fn prune_assignment_states(states: Vec<AssignmentState>) -> Vec<AssignmentState> {
+        let mut best_by_last_position: HashMap<Option<usize>, AssignmentState> = HashMap::new();
+
+        for state in states {
+            let last_position = state.metrics.last_position;
+            if let Some(current) = best_by_last_position.get_mut(&last_position) {
+                if Self::compare_assignment_states(&state, current).is_lt() {
+                    *current = state;
+                }
+            } else {
+                best_by_last_position.insert(last_position, state);
+            }
+        }
+
+        let mut states: Vec<AssignmentState> = best_by_last_position.into_values().collect();
+        states.sort_by(Self::compare_assignment_states);
+        states
+    }
+
     fn compare_assignment_states(lhs: &AssignmentState, rhs: &AssignmentState) -> Ordering {
-        rhs.rank
-            .score
-            .partial_cmp(&lhs.rank.score)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| rhs.selected.len().cmp(&lhs.selected.len()))
+        rhs.metrics
+            .matched_terms
+            .cmp(&lhs.metrics.matched_terms)
             .then_with(|| {
-                let lhs_score = lhs
-                    .selected
-                    .iter()
-                    .map(|token_match| token_match.score)
-                    .sum::<f64>();
-                let rhs_score = rhs
-                    .selected
-                    .iter()
-                    .map(|token_match| token_match.score)
-                    .sum::<f64>();
-                rhs_score.partial_cmp(&lhs_score).unwrap_or(Ordering::Equal)
+                rhs.metrics
+                    .score_sum
+                    .partial_cmp(&lhs.metrics.score_sum)
+                    .unwrap_or(Ordering::Equal)
             })
+            .then_with(|| rhs.metrics.exact_terms.cmp(&lhs.metrics.exact_terms))
+            .then_with(|| lhs.metrics.proximity_cost.cmp(&rhs.metrics.proximity_cost))
+            .then_with(|| lhs.metrics.first_position.cmp(&rhs.metrics.first_position))
+            .then_with(|| lhs.metrics.last_position.cmp(&rhs.metrics.last_position))
+            .then_with(|| Self::compare_selected_matches(&lhs.selected, &rhs.selected))
+    }
+
+    fn compare_selected_matches(lhs: &[TokenMatch], rhs: &[TokenMatch]) -> Ordering {
+        for (lhs_match, rhs_match) in lhs.iter().zip(rhs) {
+            let ordering = lhs_match
+                .query_index
+                .cmp(&rhs_match.query_index)
+                .then_with(|| lhs_match.doc_index.cmp(&rhs_match.doc_index))
+                .then_with(|| {
+                    rhs_match
+                        .score
+                        .partial_cmp(&lhs_match.score)
+                        .unwrap_or(Ordering::Equal)
+                })
+                .then_with(|| rhs_match.exact.cmp(&lhs_match.exact));
+
+            if !ordering.is_eq() {
+                return ordering;
+            }
+        }
+
+        lhs.len().cmp(&rhs.len())
     }
 
     fn compare_ranked_results(&self, lhs: &RankedResult<Id>, rhs: &RankedResult<Id>) -> Ordering {
