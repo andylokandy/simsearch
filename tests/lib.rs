@@ -150,6 +150,19 @@ fn equal_ranks_keep_insertion_order_without_ord_ids() {
 }
 
 #[test]
+fn updating_existing_content_preserves_insertion_order() {
+    let mut engine: Index<u32> = Index::new();
+
+    engine.insert(1, "apple");
+    engine.insert(2, "apple");
+    engine.insert(1, "apple");
+
+    let results = ids(engine.search("apple"));
+
+    assert_eq!(results, vec![1, 2]);
+}
+
+#[test]
 fn query_terms_need_distinct_document_tokens() {
     let mut engine: Index<u32> = Index::new();
 

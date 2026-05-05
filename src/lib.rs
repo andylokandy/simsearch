@@ -20,6 +20,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
+use std::ops::Bound;
 
 use strsim::jaro_winkler;
 
@@ -279,7 +280,7 @@ where
     /// Alison Brie, Paul F. Tompkins, and Aaron Paul.");
     /// ```
     pub fn insert(&mut self, id: Id, content: &str) {
-        let tokens = self.tokenize(&[content]);
+        let tokens = self.tokenize([content]);
         self.insert_normalized_tokens(id, tokens)
     }
 
@@ -316,22 +317,21 @@ where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let parts: Vec<String> = parts
-            .into_iter()
-            .map(|part| part.as_ref().to_string())
-            .collect();
-        let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
-        let tokens = self.tokenize(&parts);
+        let tokens = self.tokenize(parts);
         self.insert_normalized_tokens(id, tokens)
     }
 
     fn insert_normalized_tokens(&mut self, id: Id, tokens: Vec<String>) {
-        self.remove(&id);
-
-        let id_num = self.id_num_counter;
-        self.ids_map.insert(id.clone(), id_num);
-        self.reverse_ids_map.insert(id_num, id);
-        self.id_num_counter += 1;
+        let id_num = if let Some(id_num) = self.ids_map.get(&id).copied() {
+            self.remove_indexed_tokens(id_num);
+            id_num
+        } else {
+            let id_num = self.id_num_counter;
+            self.ids_map.insert(id.clone(), id_num);
+            self.reverse_ids_map.insert(id_num, id);
+            self.id_num_counter += 1;
+            id_num
+        };
 
         for (position, token) in tokens.iter().enumerate() {
             if !self.reverse_map.contains_key(token) {
@@ -377,7 +377,7 @@ where
     /// assert!(results[0].score > 0.0);
     /// ```
     pub fn search(&self, pattern: &str) -> Vec<Hit<Id>> {
-        self.search_ranked(self.tokenize(&[pattern]))
+        self.search_ranked(self.tokenize([pattern]))
             .into_iter()
             .map(|result| Hit {
                 id: result.id,
@@ -671,7 +671,7 @@ where
         }
 
         self.terms
-            .range(prefix.to_string()..)
+            .range::<str, _>((Bound::Included(prefix), Bound::Unbounded))
             .take_while(|term| term.starts_with(prefix))
             .map(String::as_str)
             .collect()
@@ -728,22 +728,25 @@ where
         self.terms.remove(term);
     }
 
-    /// Removes an entry by ID.
-    pub fn remove(&mut self, id: &Id) {
-        if let Some(id_num) = self.ids_map.get(id).copied() {
-            if let Some(tokens) = self.forward_map.remove(&id_num) {
-                let unique_tokens = tokens.into_iter().collect::<HashSet<_>>();
-                for token in unique_tokens {
-                    if let Some(postings) = self.reverse_map.get_mut(&token) {
-                        postings.remove(&id_num);
-                        if postings.is_empty() {
-                            self.reverse_map.remove(&token);
-                            self.remove_term(&token);
-                        }
+    fn remove_indexed_tokens(&mut self, id_num: usize) {
+        if let Some(tokens) = self.forward_map.remove(&id_num) {
+            let unique_tokens = tokens.into_iter().collect::<HashSet<_>>();
+            for token in unique_tokens {
+                if let Some(postings) = self.reverse_map.get_mut(&token) {
+                    postings.remove(&id_num);
+                    if postings.is_empty() {
+                        self.reverse_map.remove(&token);
+                        self.remove_term(&token);
                     }
                 }
             }
-            self.ids_map.remove(id);
+        }
+    }
+
+    /// Removes an entry by ID.
+    pub fn remove(&mut self, id: &Id) {
+        if let Some(id_num) = self.ids_map.remove(id) {
+            self.remove_indexed_tokens(id_num);
             self.reverse_ids_map.remove(&id_num);
         }
     }
@@ -758,35 +761,27 @@ where
         self.terms.clear();
     }
 
-    fn tokenize(&self, tokens: &[&str]) -> Vec<String> {
-        let tokens = self.normalize_tokens(tokens);
-        tokens
-            .into_iter()
-            .flat_map(|token| {
-                token
-                    .split(|ch: char| {
-                        ch.is_whitespace() || self.options.extra_separators.contains(&ch)
-                    })
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .filter(|token| !token.is_empty())
-            .collect()
-    }
+    fn tokenize<I, S>(&self, parts: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut tokens = Vec::new();
+        for part in parts {
+            let part = if self.options.case_sensitive {
+                part.as_ref().to_string()
+            } else {
+                part.as_ref().to_lowercase()
+            };
 
-    fn normalize_tokens(&self, tokens: &[&str]) -> Vec<String> {
-        let mut tokens: Vec<String> = tokens
-            .iter()
-            .map(|token| {
-                if self.options.case_sensitive {
-                    token.to_string()
-                } else {
-                    token.to_lowercase()
+            for token in part
+                .split(|ch: char| ch.is_whitespace() || self.options.extra_separators.contains(&ch))
+            {
+                if !token.is_empty() {
+                    tokens.push(token.to_string());
                 }
-            })
-            .collect();
-
-        tokens.retain(|token| !token.is_empty());
+            }
+        }
 
         tokens
     }
