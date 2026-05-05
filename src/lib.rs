@@ -211,7 +211,8 @@ where
     /// Inserts an entry into the index.
     ///
     /// The content is tokenized according to the index options.
-    /// By default, whitespace, including tabs, is treated as a separator.
+    /// By default, [`char::is_ascii_whitespace`] characters are treated as
+    /// separators.
     /// Use [`Options`] to change tokenization behavior.
     ///
     /// Inserting an existing ID updates its content.
@@ -224,8 +225,14 @@ where
     /// ```
     /// use simsearch::{Options, Index};
     ///
+    /// let mut separators: Vec<char> = (0..=u8::MAX)
+    ///     .map(char::from)
+    ///     .filter(char::is_ascii_whitespace)
+    ///     .collect();
+    /// separators.extend([',', '.']);
+    ///
     /// let mut engine: Index<&str> = Index::with_options(
-    ///     Options::new().separators(vec![",".to_string(), ".".to_string()]));
+    ///     Options::new().separators(separators));
     ///
     /// engine.insert("BoJack Horseman", "BoJack Horseman, an American
     /// adult animated comedy-drama series created by Raphael Bob-Waksberg.
@@ -308,7 +315,8 @@ where
     /// relevance.
     ///
     /// The query is tokenized according to the index options.
-    /// By default, whitespace, including tabs, is treated as a separator.
+    /// By default, [`char::is_ascii_whitespace`] characters are treated as
+    /// separators.
     /// Use [`Options`] to change tokenization behavior.
     /// Search matches exact terms, typo-tolerant terms, and the last query
     /// term as a prefix, including typo-tolerant prefixes when both options are
@@ -705,22 +713,11 @@ where
     }
 
     fn tokenize(&self, tokens: &[&str]) -> Vec<String> {
-        let tokens = self.normalize_tokens(tokens);
-
-        let mut tokens: Vec<String> = if self.options.split_whitespace {
-            tokens
-                .iter()
-                .flat_map(|token| token.split_whitespace())
-                .map(|token| token.to_string())
-                .collect()
-        } else {
-            tokens
-        };
-
+        let mut tokens = self.normalize_tokens(tokens);
         for separator in &self.options.separators {
             tokens = tokens
                 .iter()
-                .flat_map(|token| token.split_terminator(separator.as_str()))
+                .flat_map(|token| token.split_terminator(*separator))
                 .map(|token| token.to_string())
                 .collect();
         }
@@ -765,8 +762,7 @@ pub struct Options {
     prefix_search: bool,
     typo_tolerance: bool,
     case_sensitive: bool,
-    split_whitespace: bool,
-    separators: Vec<String>,
+    separators: Vec<char>,
 }
 
 impl Options {
@@ -777,8 +773,7 @@ impl Options {
             prefix_search: true,
             typo_tolerance: true,
             case_sensitive: false,
-            split_whitespace: true,
-            separators: vec![],
+            separators: Self::default_separators(),
         }
     }
 
@@ -819,32 +814,25 @@ impl Options {
         }
     }
 
-    /// Sets whether the index splits tokens on whitespace.
-    /// Whitespace includes spaces, tabs, returns, and similar characters.
-    ///
-    /// See also [`std::str::split_whitespace()`](https://doc.rust-lang.org/std/primitive.str.html#method.split_whitespace).
-    ///
-    /// Defaults to `true`.
-    pub fn split_whitespace(self, split_whitespace: bool) -> Self {
-        Options {
-            split_whitespace,
-            ..self
-        }
-    }
-
-    /// Sets custom token separators.
+    /// Sets token separators.
     ///
     /// This option enables the tokenizer to split indexed parts and search
-    /// queries by the configured custom separators.
+    /// queries by the configured separators.
     ///
-    /// Defaults to an empty list.
+    /// Defaults to [`char::is_ascii_whitespace`] characters.
     ///
     /// # Examples
     /// ```
     /// use simsearch::{Options, Index};
     ///
+    /// let mut separators: Vec<char> = (0..=u8::MAX)
+    ///     .map(char::from)
+    ///     .filter(char::is_ascii_whitespace)
+    ///     .collect();
+    /// separators.extend(['/', '\\']);
+    ///
     /// let mut engine: Index<usize> = Index::with_options(
-    ///     Options::new().separators(vec!["/".to_string(), "\\".to_string()]));
+    ///     Options::new().separators(separators));
     ///
     /// engine.insert(1, "the old/man/and/the sea");
     ///
@@ -852,8 +840,21 @@ impl Options {
     ///
     /// assert_eq!(results[0].id, 1);
     /// ```
-    pub fn separators(self, separators: Vec<String>) -> Self {
-        Options { separators, ..self }
+    pub fn separators<I>(self, separators: I) -> Self
+    where
+        I: IntoIterator<Item = char>,
+    {
+        Options {
+            separators: separators.into_iter().collect(),
+            ..self
+        }
+    }
+
+    fn default_separators() -> Vec<char> {
+        (0..=u8::MAX)
+            .map(char::from)
+            .filter(char::is_ascii_whitespace)
+            .collect()
     }
 }
 

@@ -19,9 +19,10 @@ can be indexed from multiple parts without custom tokenization.
   by a threshold; callers can filter by `Hit::score` when needed.
 - Removed configurable matching metrics and `SearchOptions::levenshtein(...)`.
   Typo tolerance now uses Jaro-Winkler similarity internally.
-- Renamed tokenizer options:
-  - `stop_words(...)` is now `separators(...)`.
-  - `stop_whitespace(...)` is now `split_whitespace(...)`.
+- Replaced tokenizer options with `Options::separators(...)`, which sets the
+  full separator list. By default, separators are
+  [`char::is_ascii_whitespace`](https://doc.rust-lang.org/std/primitive.char.html#method.is_ascii_whitespace)
+  characters.
 - Added a default result limit of 10. Use `Options::limit(...)` to change it.
 - Removed the `Ord` requirement for IDs. IDs now need `Eq + Clone + Hash`;
   equal-score ties are resolved by insertion order.
@@ -158,10 +159,18 @@ let options = SearchOptions::new()
 After:
 
 ```rust
-let options = Options::new()
-    .split_whitespace(true)
-    .separators(vec!["/".to_string()]);
+let mut separators: Vec<char> = (0..=u8::MAX)
+    .map(char::from)
+    .filter(char::is_ascii_whitespace)
+    .collect();
+separators.push('/');
+
+let options = Options::new().separators(separators);
 ```
+
+`separators(...)` replaces the whole separator list. Include
+`char::is_ascii_whitespace` characters yourself if you want to keep the default
+whitespace behavior while adding custom separators.
 
 #### Update result limits
 

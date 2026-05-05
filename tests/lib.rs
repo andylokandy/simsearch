@@ -17,7 +17,7 @@ fn populate_engine() -> Index<String> {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect::<Vec<_>>();
-    let mut engine = Index::with_options(Options::new().split_whitespace(true));
+    let mut engine = Index::new();
 
     for title in books {
         engine.insert(title.clone(), &title);
@@ -179,8 +179,12 @@ fn updating_existing_content_prunes_prefix_and_typo_terms() {
 
 #[test]
 fn insert_parts_uses_builtin_tokenizer() {
-    let mut engine: Index<u32> =
-        Index::with_options(Options::new().separators(vec!["/".to_string()]));
+    let mut separators: Vec<char> = (0..=u8::MAX)
+        .map(char::from)
+        .filter(char::is_ascii_whitespace)
+        .collect();
+    separators.push('/');
+    let mut engine: Index<u32> = Index::with_options(Options::new().separators(separators));
 
     engine.insert_parts(1, ["old/man"]);
 
@@ -189,6 +193,20 @@ fn insert_parts_uses_builtin_tokenizer() {
 
     assert_eq!(split_results[0].id, 1);
     assert_eq!(token_results[0].id, 1);
+}
+
+#[test]
+fn separators_replace_default_separators() {
+    let mut engine: Index<u32> = Index::with_options(Options::new().separators(vec!['/']));
+
+    engine.insert(1, "old/man");
+    engine.insert(2, "old man");
+
+    let split_results = ids(engine.search("old/man"));
+    let unsplit_results = ids(engine.search("old man"));
+
+    assert_eq!(split_results[0], 1);
+    assert_eq!(unsplit_results[0], 2);
 }
 
 #[test]
