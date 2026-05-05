@@ -4,7 +4,7 @@ edition = "2024"
 name = "simsearch"
 version = "0.4.0"
 rust-version = "1.85"
-license = "MIT/Apache-2.0"
+license = "MIT"
 
 description = "A small in-memory fuzzy search index for embedded autocomplete and search suggestions."
 documentation = "https://docs.rs/simsearch"

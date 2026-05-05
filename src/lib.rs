@@ -156,7 +156,7 @@ impl AssignmentState {
 impl Rank {
     fn from_matches(matches: &[TokenMatch], query_len: usize, doc_len: usize) -> Self {
         let matched_terms = matches.len();
-        let proximity_cost = Self::proximity_cost(matches, doc_len);
+        let proximity_cost = Self::proximity_cost(matches);
         let first_position = matches
             .iter()
             .map(|token_match| token_match.doc_index)
@@ -194,7 +194,7 @@ impl Rank {
         }
     }
 
-    fn proximity_cost(matches: &[TokenMatch], doc_len: usize) -> usize {
+    fn proximity_cost(matches: &[TokenMatch]) -> usize {
         if matches.len() < 2 {
             return 0;
         }
@@ -203,11 +203,7 @@ impl Rank {
         for window in matches.windows(2) {
             let lhs = window[0].doc_index;
             let rhs = window[1].doc_index;
-            if rhs > lhs {
-                cost += rhs - lhs - 1;
-            } else {
-                cost += doc_len + lhs - rhs + 1;
-            }
+            cost += rhs - lhs - 1;
         }
         cost
     }
@@ -749,7 +745,7 @@ where
             }
             self.ids_map.remove(id);
             self.reverse_ids_map.remove(&id_num);
-        };
+        }
     }
 
     /// Clears all entries.
