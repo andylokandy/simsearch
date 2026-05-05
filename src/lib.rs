@@ -211,9 +211,9 @@ where
     /// Inserts an entry into the index.
     ///
     /// The content is tokenized according to the index options.
-    /// By default, [`char::is_ascii_whitespace`] characters are treated as
+    /// By default, [`char::is_whitespace`] characters are treated as
     /// separators.
-    /// Use [`Options`] to change tokenization behavior.
+    /// Use [`Options`] to add more separators.
     ///
     /// Inserting an existing ID updates its content.
     ///
@@ -225,14 +225,8 @@ where
     /// ```
     /// use simsearch::{Options, Index};
     ///
-    /// let mut separators: Vec<char> = (0..=u8::MAX)
-    ///     .map(char::from)
-    ///     .filter(char::is_ascii_whitespace)
-    ///     .collect();
-    /// separators.extend([',', '.']);
-    ///
     /// let mut engine: Index<&str> = Index::with_options(
-    ///     Options::new().separators(separators));
+    ///     Options::new().separators([',', '.', '/']));
     ///
     /// engine.insert("BoJack Horseman", "BoJack Horseman, an American
     /// adult animated comedy-drama series created by Raphael Bob-Waksberg.
@@ -315,9 +309,9 @@ where
     /// relevance.
     ///
     /// The query is tokenized according to the index options.
-    /// By default, [`char::is_ascii_whitespace`] characters are treated as
+    /// By default, [`char::is_whitespace`] characters are treated as
     /// separators.
-    /// Use [`Options`] to change tokenization behavior.
+    /// Use [`Options`] to add more separators.
     /// Search matches exact terms, typo-tolerant terms, and the last query
     /// term as a prefix, including typo-tolerant prefixes when both options are
     /// enabled.
@@ -713,18 +707,19 @@ where
     }
 
     fn tokenize(&self, tokens: &[&str]) -> Vec<String> {
-        let mut tokens = self.normalize_tokens(tokens);
-        for separator in &self.options.separators {
-            tokens = tokens
-                .iter()
-                .flat_map(|token| token.split_terminator(*separator))
-                .map(|token| token.to_string())
-                .collect();
-        }
-
-        tokens.retain(|token| !token.is_empty());
-
+        let tokens = self.normalize_tokens(tokens);
         tokens
+            .into_iter()
+            .flat_map(|token| {
+                token
+                    .split(|ch: char| {
+                        ch.is_whitespace() || self.options.extra_separators.contains(&ch)
+                    })
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|token| !token.is_empty())
+            .collect()
     }
 
     fn normalize_tokens(&self, tokens: &[&str]) -> Vec<String> {
@@ -762,7 +757,7 @@ pub struct Options {
     prefix_search: bool,
     typo_tolerance: bool,
     case_sensitive: bool,
-    separators: Vec<char>,
+    extra_separators: Vec<char>,
 }
 
 impl Options {
@@ -773,7 +768,7 @@ impl Options {
             prefix_search: true,
             typo_tolerance: true,
             case_sensitive: false,
-            separators: Self::default_separators(),
+            extra_separators: Vec::new(),
         }
     }
 
@@ -814,25 +809,20 @@ impl Options {
         }
     }
 
-    /// Sets token separators.
+    /// Adds token separators.
     ///
-    /// This option enables the tokenizer to split indexed parts and search
-    /// queries by the configured separators.
+    /// Indexed parts and search queries are always split by
+    /// [`char::is_whitespace`] characters. This option adds more
+    /// separators on top of that default behavior.
     ///
-    /// Defaults to [`char::is_ascii_whitespace`] characters.
+    /// Defaults to no extra separators.
     ///
     /// # Examples
     /// ```
     /// use simsearch::{Options, Index};
     ///
-    /// let mut separators: Vec<char> = (0..=u8::MAX)
-    ///     .map(char::from)
-    ///     .filter(char::is_ascii_whitespace)
-    ///     .collect();
-    /// separators.extend(['/', '\\']);
-    ///
     /// let mut engine: Index<usize> = Index::with_options(
-    ///     Options::new().separators(separators));
+    ///     Options::new().separators(['/', '\\']));
     ///
     /// engine.insert(1, "the old/man/and/the sea");
     ///
@@ -845,16 +835,9 @@ impl Options {
         I: IntoIterator<Item = char>,
     {
         Options {
-            separators: separators.into_iter().collect(),
+            extra_separators: separators.into_iter().collect(),
             ..self
         }
-    }
-
-    fn default_separators() -> Vec<char> {
-        (0..=u8::MAX)
-            .map(char::from)
-            .filter(char::is_ascii_whitespace)
-            .collect()
     }
 }
 

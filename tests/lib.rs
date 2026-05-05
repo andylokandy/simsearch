@@ -179,12 +179,7 @@ fn updating_existing_content_prunes_prefix_and_typo_terms() {
 
 #[test]
 fn insert_parts_uses_builtin_tokenizer() {
-    let mut separators: Vec<char> = (0..=u8::MAX)
-        .map(char::from)
-        .filter(char::is_ascii_whitespace)
-        .collect();
-    separators.push('/');
-    let mut engine: Index<u32> = Index::with_options(Options::new().separators(separators));
+    let mut engine: Index<u32> = Index::with_options(Options::new().separators(['/']));
 
     engine.insert_parts(1, ["old/man"]);
 
@@ -196,17 +191,20 @@ fn insert_parts_uses_builtin_tokenizer() {
 }
 
 #[test]
-fn separators_replace_default_separators() {
+fn separators_keep_whitespace_and_add_extra_separators() {
     let mut engine: Index<u32> = Index::with_options(Options::new().separators(vec!['/']));
 
     engine.insert(1, "old/man");
-    engine.insert(2, "old man");
+    engine.insert(2, "new world");
+    engine.insert(3, "unicode\u{2003}space");
 
-    let split_results = ids(engine.search("old/man"));
-    let unsplit_results = ids(engine.search("old man"));
+    let slash_results = ids(engine.search("old man"));
+    let whitespace_results = ids(engine.search("new world"));
+    let unicode_whitespace_results = ids(engine.search("unicode space"));
 
-    assert_eq!(split_results[0], 1);
-    assert_eq!(unsplit_results[0], 2);
+    assert_eq!(slash_results[0], 1);
+    assert_eq!(whitespace_results[0], 2);
+    assert_eq!(unicode_whitespace_results[0], 3);
 }
 
 #[test]

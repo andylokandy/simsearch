@@ -19,9 +19,9 @@ can be indexed from multiple parts without custom tokenization.
   by a threshold; callers can filter by `Hit::score` when needed.
 - Removed configurable matching metrics and `SearchOptions::levenshtein(...)`.
   Typo tolerance now uses Jaro-Winkler similarity internally.
-- Replaced tokenizer options with `Options::separators(...)`, which sets the
-  full separator list. By default, separators are
-  [`char::is_ascii_whitespace`](https://doc.rust-lang.org/std/primitive.char.html#method.is_ascii_whitespace)
+- Replaced tokenizer options with `Options::separators(...)`, which adds
+  separators beyond the default
+  [`char::is_whitespace`](https://doc.rust-lang.org/std/primitive.char.html#method.is_whitespace)
   characters.
 - Added a default result limit of 10. Use `Options::limit(...)` to change it.
 - Removed the `Ord` requirement for IDs. IDs now need `Eq + Clone + Hash`;
@@ -34,7 +34,7 @@ can be indexed from multiple parts without custom tokenization.
 - `Index::insert_parts(id, parts)` for indexing multiple searchable parts.
 - `Options::limit(...)` for controlling result count.
 - `Options::prefix_search(...)` for controlling last-token prefix matching.
-- `Options::typo_tolerance(...)` for controlling bounded typo matching.
+- `Options::typo_tolerance(...)` for controlling typo-tolerant matching.
 - Scores in the interactive `books` example.
 
 ### Changed
@@ -159,18 +159,11 @@ let options = SearchOptions::new()
 After:
 
 ```rust
-let mut separators: Vec<char> = (0..=u8::MAX)
-    .map(char::from)
-    .filter(char::is_ascii_whitespace)
-    .collect();
-separators.push('/');
-
-let options = Options::new().separators(separators);
+let options = Options::new().separators(['/']);
 ```
 
-`separators(...)` replaces the whole separator list. Include
-`char::is_ascii_whitespace` characters yourself if you want to keep the default
-whitespace behavior while adding custom separators.
+`separators(...)` adds separators on top of the default
+`char::is_whitespace` behavior.
 
 #### Update result limits
 
