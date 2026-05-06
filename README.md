@@ -1,6 +1,6 @@
 # `simsearch`
 
-[![Continuous integration](https://github.com/andylokandy/simsearch-rs/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/andylokandy/simsearch-rs/actions/workflows/ci.yml)
+[![CI](https://github.com/andylokandy/simsearch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/andylokandy/simsearch/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/simsearch.svg)](https://crates.io/crates/simsearch)
 [![docs.rs](https://docs.rs/simsearch/badge.svg)](https://docs.rs/simsearch)
 [![MSRV 1.85.0](https://img.shields.io/badge/MSRV-1.85.0-green?style=flat-square&logo=rust)](https://www.whatrustisit.com)

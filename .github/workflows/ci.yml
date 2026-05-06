@@ -1,10 +1,10 @@
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
   pull_request:
-    branches: [ master ]
+    branches: [ main ]
 
-name: Continuous integration
+name: CI
 
 env:
   CARGO_TERM_COLOR: always
