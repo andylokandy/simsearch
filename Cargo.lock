@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "simsearch"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "divan",
  "inquire",
@@ -511,7 +511,6 @@ dependencies = [
  "serde",
  "serde_json",
  "strsim",
- "triple_accel",
 ]
 
 [[package]]
@@ -555,12 +554,6 @@ checksum = "d40c6d1b69745a6ec6fb1ca717914848da4b44ae29d9b3080cbee91d72a69b14"
 dependencies = [
  "lazy_static",
 ]
-
-[[package]]
-name = "triple_accel"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22048bc95dfb2ffd05b1ff9a756290a009224b60b2f0e7525faeee7603851e63"
 
 [[package]]
 name = "unicode-ident"
