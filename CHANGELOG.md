@@ -50,7 +50,22 @@ can be indexed from multiple parts without custom tokenization.
 
 ### Migration Guide
 
-#### Rename the main types
+The easiest upgrade path is to fix the compile errors in this order:
+
+1. Rename the public types and constructors.
+2. Read search results from `Hit<Id>` instead of using IDs directly.
+3. Replace token-based indexing and searching with `insert_parts(...)` and
+   `search(...)`.
+4. Move threshold filtering to caller code that filters by `Hit::score`.
+5. Replace tokenizer options with `Options::separators(...)`.
+6. Remove matching metric selection.
+7. Review the new default result limit of 10.
+8. Review ID bounds and tie-breaking.
+
+#### 1. Rename types and constructors
+
+`SimSearch` is now `Index`, `SearchOptions` is now `Options`, and
+`SimSearch::new_with(...)` is now `Index::with_options(...)`.
 
 Before:
 
@@ -70,9 +85,10 @@ let options = Options::new();
 let mut index: Index<u32> = Index::with_options(options);
 ```
 
-#### Read IDs from search hits
+#### 2. Read IDs and scores from hits
 
-`search(...)` now returns `Vec<Hit<Id>>`.
+`search(...)` now returns `Vec<Hit<Id>>`. Each hit contains the matched `id`
+and a normalized `score` in the `0.0..=1.0` range.
 
 Before:
 
@@ -99,13 +115,15 @@ let ids: Vec<u32> = index
     .collect();
 ```
 
-The old scored search APIs are also replaced by `search(...)`; every returned
-hit includes both `id` and `score`.
+The old scored search APIs are folded into `search(...)`; every returned hit
+includes both `id` and `score`.
 
-#### Replace token APIs with parts
+#### 3. Replace token APIs with parts and queries
 
-The old token APIs were often used to avoid manually concatenating several
-document parts. Use `insert_parts(...)` for that case.
+The old token APIs have two common migrations.
+
+Use `insert_parts(...)` when your old `insert_tokens(...)` input represented
+several searchable fields, aliases, or other document parts:
 
 Before:
 
@@ -121,11 +139,17 @@ index.insert_parts(1, ["The Old Man and the Sea", "Ernest Hemingway"]);
 let results = index.search("hemingway");
 ```
 
-There is no direct replacement for fully custom query tokenization. The index
-now intentionally uses one built-in tokenizer for both indexed parts and search
-queries.
+Use `search(...)` with a string query instead of `search_tokens(...)`. The same
+built-in tokenizer is used for indexed parts and search queries.
 
-#### Replace threshold filtering
+There is no direct replacement for fully custom query tokenization. If you need
+more control than separators provide, prepare searchable strings before
+inserting them into the index and before passing queries to `search(...)`.
+
+#### 4. Replace threshold filtering
+
+`SearchOptions::threshold(...)` was removed. Search returns lower-quality
+matches with lower scores, so callers can filter the returned hits.
 
 Before:
 
@@ -146,7 +170,10 @@ let results: Vec<_> = index
 Search applies `Options::limit(...)` before caller-side filtering. Increase the
 limit first if you need more results before filtering by score.
 
-#### Update tokenizer options
+#### 5. Replace tokenizer options with separators
+
+`stop_whitespace(...)` and `stop_words(...)` were removed. Whitespace is always
+a separator, and `Options::separators(...)` adds more separator characters.
 
 Before:
 
@@ -165,7 +192,31 @@ let options = Options::new().separators(['/']);
 `separators(...)` adds separators on top of the default
 `char::is_whitespace` behavior.
 
-#### Update result limits
+If old `stop_words(...)` entries contained multi-character strings, or if you
+used `stop_whitespace(false)`, there is no direct option replacement. Prepare
+the searchable strings before inserting or searching.
+
+#### 6. Remove matching metric selection
+
+`SearchOptions::levenshtein(...)` was removed. The index uses Jaro-Winkler
+similarity internally for typo-tolerant matching.
+
+Before:
+
+```rust
+let options = SearchOptions::new().levenshtein(true);
+```
+
+After:
+
+```rust
+let options = Options::new();
+```
+
+Use `Options::typo_tolerance(false)` if you want to disable typo-tolerant
+matching.
+
+#### 7. Review result limits
 
 Search now returns up to 10 results by default.
 
@@ -173,3 +224,8 @@ Search now returns up to 10 results by default.
 let options = Options::new().limit(20);
 let mut index = Index::with_options(options);
 ```
+
+#### 8. Review ID bounds and tie-breaking
+
+IDs no longer need `Ord`. They need `Eq + Clone + Hash`, and equal-score ties
+keep insertion order.
